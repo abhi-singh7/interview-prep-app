@@ -26,6 +26,7 @@ replay_pid*
 # Node / npm
 frontend/node_modules/
 frontend/dist/
+frontend/target/
 frontend/.angular/
 
 # Maven build output
