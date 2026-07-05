@@ -11,22 +11,44 @@ import org.springframework.stereotype.Service;
 import java.util.List;
 import java.util.Map;
 
+/**
+ * Service class for processing and retrieving user analytics data.
+ * It performs complex queries to aggregate performance metrics, category breakdowns,
+ * and session summaries from the database.
+ */
 @Service
 public class AnalyticsService {
 
     private final EntityManager entityManager;
 
+    /**
+     * Constructs the AnalyticsService with the required EntityManager.
+     *
+     * @param entityManager The JPA EntityManager for executing database queries.
+     */
     public AnalyticsService(EntityManager entityManager) {
         this.entityManager = entityManager;
     }
 
+    /**
+     * Retrieves a comprehensive analytics response for a specific user.
+     * This includes total completed sessions, average score across all sessions,
+     * a breakdown of scores by category, and a list of recent session summaries.
+     *
+     * @param userId The unique identifier of the user.
+     * @return An AnalyticsResponse object containing all aggregated metrics.
+     */
     public AnalyticsResponse getPerformanceData(Long userId) {
-        // Calculate total sessions and average score
+        // Calculate total number of completed sessions for the user.
         Long totalSessions = entityManager.createQuery(
                 "SELECT COUNT(s) FROM InterviewSession s WHERE s.user.id = :userId AND s.status = 'COMPLETED'",
                 Long.class).setParameter("userId", userId).getSingleResult();
 
-        // Average score: per-session percentage (earned / possible), averaged across sessions.
+        /**
+         * Calculate the average score across all completed sessions.
+         * The score is calculated as a percentage (earned / possible) per session,
+         * then averaged across all sessions where the user has completed interviews.
+         */
         Number avgScoreNum = (Number) entityManager.createNativeQuery(
                 "SELECT AVG(sa.pct)::float FROM (" +
                 "  SELECT ROUND((SUM(e.score) * 100.0) / NULLIF(qc.total_questions * 10, 0), 2) AS pct " +
@@ -45,11 +67,16 @@ public class AnalyticsService {
 
         Double avgScore = avgScoreNum != null ? avgScoreNum.doubleValue() : null;
 
+        // Round the average score to 2 decimal places.
         double avgScoreVal = avgScore != null ? Math.round(avgScore * 100.0) / 100.0 : 0;
 
-        // Category breakdown: only the latest evaluation per answer, using string_to_array + EXISTS so comma-separated category_id values match correctly.
-        // Security: The userId parameter is bound via setParameter(), preventing SQL injection.
-        // All user-supplied data flows through JPA parameterized queries; no string interpolation occurs.
+        /**
+         * Retrieve a breakdown of average scores by category.
+         * This query identifies the latest evaluation for each answer and joins it with
+         * categories. It handles multi-category assignments by unnesting the category_id array.
+         *
+         * Security Note: Uses parameterized queries to prevent SQL injection.
+         */
         List<Map<String, Object>> categoryBreakdownRows = entityManager.createNativeQuery(
                 "SELECT c.name as category_name, AVG(latest_e.score)::float as avg_score FROM (" +
                 "  SELECT DISTINCT ON (a3.id) e3.id AS eval_id, e3.score, a3.id AS ans_id " +
@@ -80,11 +107,14 @@ public class AnalyticsService {
             categoryBreakdown.put(categoryName, Math.round(scoreVal * 100.0) / 100.0);
         }
 
-        // Query completed sessions ordered by endedAt descending (most recent first).
-        // - All question types included (removed q.type = 'CODE' filter so THEORY questions contribute to session averages).
-        // - Multi-category resolution via string_to_array + unnest + EXISTS join with categories table.
-        // - Only the latest evaluation per answer contributes to AVG(e.score) via DISTINCT ON subquery.
-        // - answeredCount tracks distinct evaluated answers; avg_score is NULL when no evaluations exist (no answers).
+        /**
+         * Retrieve a list of recent completed sessions with summary details.
+         * Includes category names (aggregated), difficulty, average scores,
+         * and counts for questions and answered questions.
+         *
+         * - Uses DISTINCT ON to ensure only the most recent evaluation per answer is considered.
+         * - Aggregates category names into a comma-separated string.
+         */
         List<Object[]> sessionRows = entityManager.createNativeQuery(
                 "SELECT s.id as session_id, s.ended_at, " +
                 "COALESCE(string_agg(DISTINCT c.name, ',' ORDER BY c.name), 'N/A') as category_name, " +
@@ -119,7 +149,7 @@ public class AnalyticsService {
             double scoreVal = scoreObj != null ? ((Number) scoreObj).doubleValue() : 0.0;
             int answeredCount = row[6] instanceof Number n ? n.intValue() : 0;
 
-            // Total score for display: avg_score * answered_count (only count answered questions, not all).
+            // Calculate total score for display: avg_score * answered_count (only count answered questions, not all).
             // If no answers were evaluated (answeredCount == 0), total is 0.
             double totalScore = answeredCount > 0 && row[4] != null ? Math.round(scoreVal * answeredCount) : 0;
             summary.setScore((int) totalScore);
@@ -140,6 +170,12 @@ public class AnalyticsService {
         return response;
     }
 
+    /**
+     * Converts a Jackson ObjectNode containing category scores into a LinkedHashMap.
+     *
+     * @param node The ObjectNode containing category names as keys and scores as values.
+     * @return A LinkedHashMap of category names to their respective scores.
+     */
     private Map<String, Double> categoryMapperToMap(ObjectNode node) {
         java.util.Map<String, Double> result = new java.util.LinkedHashMap<>();
         node.forEachEntry((key, value) -> {
