@@ -1,0 +1,20 @@
+# Dependencies
+node_modules/
+
+# Build outputs
+dist/
+target/
+.angular/
+*.tsbuildinfo
+
+# Logs & OS junk
+*.log
+.DS_Store
+
+# Env / secrets
+.env
+
+# IDE
+.idea/
+.vscode/
+*.iml

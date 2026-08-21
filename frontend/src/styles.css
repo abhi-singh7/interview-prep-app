@@ -1,0 +1,104 @@
+/* Global dark-mode overrides for Material components and custom surfaces.
+ * Activated by adding the "dark" class to <body>. */
+
+:root {
+  --ai-bg: #ffffff;
+  --ai-fg: #212121;
+  --ai-surface: #f5f5f5;
+  --ai-border: #e0e0e0;
+  --ai-muted: #757575;
+}
+
+body.dark {
+  --ai-bg: #121212;
+  --ai-fg: #ececec;
+  --ai-surface: #1e1e1e;
+  --ai-border: #3a3a3a;
+  --ai-muted: #aaaaaa;
+}
+
+body {
+  background-color: var(--ai-bg);
+  color: var(--ai-fg);
+  transition: background-color 0.2s ease, color 0.2s ease;
+}
+
+/* --- Material component overrides under dark mode ---------------- */
+body.dark mat-toolbar[color="primary"] {
+  background-color: #1f1f1f !important;
+  color: #e0e0e0 !important;
+}
+
+body.dark mat-card,
+body.dark .mat-mdc-card {
+  background-color: var(--ai-surface) !important;
+  border-color: var(--ai-border);
+  color: var(--ai-fg);
+}
+
+body.dark mat-form-field,
+body.dark .mat-mdc-text-field-wrapper {
+  --mdc-outlined-text-field-outline-color: var(--ai-border) !important;
+  --mdc-outlined-text-field-input-text-color: var(--ai-fg) !important;
+  --mdc-outlined-text-field-label-text-color: var(--ai-muted) !important;
+}
+
+body.dark mat-table,
+body.dark .mat-mdc-table {
+  background-color: var(--ai-surface);
+  color: var(--ai-fg);
+}
+
+body.dark mat-chip,
+body.dark .mdc-evolution-chip-set__chip {
+  --mdc-chip-elevated-container-color: var(--ai-surface) !important;
+  --mdc-chip-label-text-color: var(--ai-fg) !important;
+}
+
+body.dark mat-snack-bar,
+body.dark .cdk-overlay-pane:not(.mat-mdc-snackbar-container) {
+  background-color: #323232 !important;
+  color: #ececec !important;
+}
+
+/* Code block backgrounds */
+body.dark pre,
+body.dark code {
+  background-color: var(--ai-surface);
+  color: var(--ai-fg);
+  border-color: var(--ai-border);
+}
+
+body.dark .hljs-comment {
+  color: #6a9955;
+}
+
+body.dark .hljs-keyword,
+body.dark .hljs-selector-tag {
+  color: #c586c0;
+}
+
+body.dark .hljs-string {
+  color: #ce9178;
+}
+
+body.dark .hljs-number {
+  color: #b5cea8;
+}
+
+body.dark .hljs-title,
+body.dark .hljs-section,
+body.dark .hljs-name {
+  color: #dcdcaa;
+}
+
+body.dark .hljs-built_in,
+body.dark .hljs-builtin-name {
+  color: #4fc1ff;
+}
+
+/* Chart canvas colors in dark mode — applied by analytics page theme-aware service */
+body.dark chart-canvas,
+body.dark [data-chart-canvas] {
+  background-color: var(--ai-surface) !important;
+}
