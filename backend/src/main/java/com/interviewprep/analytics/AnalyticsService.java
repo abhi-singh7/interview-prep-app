@@ -33,13 +33,14 @@ public class AnalyticsService {
 
         double avgScoreVal = avgScore != null ? Math.round(avgScore * 100.0) / 100.0 : 0;
 
-        // Calculate category breakdown using native query for JSONB operations
+        // FIX-06: split the comma/brace separated category_id list so multi-topic questions
+        // contribute to every category they belong to (the old join only matched single IDs).
         List<Map<String, Object>> categoryBreakdownRows = entityManager.createNativeQuery(
                 "SELECT c.name as category_name, AVG(e.score)::float as avg_score FROM evaluations e " +
                 "JOIN answers a ON e.answer_id = a.id " +
                 "JOIN questions q ON a.question_id = q.id " +
                 "JOIN interview_sessions s ON q.session_id = s.id AND s.user_id = :userId " +
-                "LEFT JOIN categories c ON q.category_id::text = c.id::text " +
+                "JOIN categories c ON c.id::text = ANY(string_to_array(regexp_replace(trim(q.category_id), '[{}]', ','), ',')) " +
                 "WHERE s.status = 'COMPLETED' AND e.score IS NOT NULL " +
                 "GROUP BY c.name ORDER BY avg_score DESC")
                 .setParameter("userId", userId)
@@ -57,27 +58,48 @@ public class AnalyticsService {
             categoryBreakdown.put(categoryName, Math.round(scoreVal * 100.0) / 100.0);
         }
 
-        // Query completed sessions ordered by endedAt descending (most recent first)
+        // FIX-03 / FIX-07: one row per completed session, averaged over ALL evaluations
+        // (code + theory), with the category resolved to a human-readable name instead of a raw id.
         List<Object[]> sessionRows = entityManager.createNativeQuery(
-                "SELECT s.id as session_id, s.ended_at, q.category_id::text as category_name, " +
-                "s.difficulty, AVG(e.score)::float as avg_score FROM interview_sessions s " +
-                "LEFT JOIN questions q ON q.session_id = s.id AND q.type = 'CODE' " +
-                "LEFT JOIN answers a ON a.question_id = q.id AND a.answer_text IS NOT NULL " +
-                "LEFT JOIN evaluations e ON e.answer_id = a.id " +
-                "WHERE s.user_id = :userId AND s.status = 'COMPLETED' " +
-                "GROUP BY s.id, s.ended_at, q.category_id, s.difficulty " +
-                "ORDER BY s.ended_at DESC").setParameter("userId", userId).getResultList();
+                "WITH session_avg AS (" +
+                "    SELECT s.id as session_id, s.ended_at, s.difficulty, AVG(e.score)::float as avg_score " +
+                "    FROM interview_sessions s " +
+                "    JOIN answers a ON a.session_id = s.id " +
+                "    JOIN evaluations e ON e.answer_id = a.id AND e.score IS NOT NULL " +
+                "    WHERE s.user_id = :userId AND s.status = 'COMPLETED' " +
+                "    GROUP BY s.id, s.ended_at, s.difficulty" +
+                "), " +
+                "session_cat AS (" +
+                "    SELECT DISTINCT ON (s.id) s.id as session_id, c.name as category_name " +
+                "    FROM interview_sessions s " +
+                "    JOIN answers a ON a.session_id = s.id " +
+                "    JOIN evaluations e ON e.answer_id = a.id AND e.score IS NOT NULL " +
+                "    JOIN questions q ON q.id = a.question_id " +
+                "    LEFT JOIN categories c ON c.id::text = ANY(string_to_array(regexp_replace(trim(q.category_id), '[{}]', ','), ',')) " +
+                "    WHERE s.user_id = :userId AND s.status = 'COMPLETED' AND c.name IS NOT NULL AND c.name <> '' " +
+                "    ORDER BY s.id, c.name" +
+                ") " +
+                "SELECT sa.session_id, sa.ended_at, sa.difficulty, sa.avg_score, sc.category_name " +
+                "FROM session_avg sa " +
+                "LEFT JOIN session_cat sc ON sc.session_id = sa.session_id " +
+                "ORDER BY sa.ended_at DESC")
+                .setParameter("userId", userId)
+                .unwrap(NativeQuery.class)
+                .setResultTransformer(Transformers.ALIAS_TO_ENTITY_MAP)
+                .getResultList();
 
         List<SessionSummary> sessions = sessionRows.stream().map(row -> {
             SessionSummary summary = new SessionSummary();
             summary.setSessionId(((Number) row[0]).longValue());
             summary.setEndedAt((java.time.LocalDateTime) row[1]);
-            Object categoryObj = row[2];
-            summary.setCategoryId(categoryObj != null ? (String) categoryObj : "N/A");
-            summary.setDifficulty(row[3] != null ? (String) row[3] : "N/A");
-            Object scoreObj = row[4];
+            Object difficultyObj = row[2];
+            summary.setDifficulty(difficultyObj != null ? difficultyObj.toString() : "N/A");
+            Object scoreObj = row[3];
             double scoreVal = scoreObj != null ? ((Number) scoreObj).doubleValue() : 0.0;
-            summary.setScore((int) Math.round(scoreVal * 100.0));
+            // FIX-02: round to 2 decimals (was previously *100 without dividing, e.g. "745/10")
+            summary.setScore(Math.round(scoreVal * 100.0) / 100.0);
+            Object categoryObj = row[4];
+            summary.setCategoryId(categoryObj != null ? (String) categoryObj : "N/A");
             return summary;
         }).toList();
 

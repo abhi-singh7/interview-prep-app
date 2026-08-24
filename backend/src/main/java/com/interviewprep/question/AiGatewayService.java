@@ -69,7 +69,9 @@ public class AiGatewayService {
     }
 
     public Evaluation evaluateCodingAnswer(Question question, Answer answer) {
-        String languagePrompt = switch (answer.getLanguageSubmitted().toLowerCase()) {
+        // FIX-14: null-guard languageSubmitted (code answers may omit it); default to JavaScript
+        String submittedLanguage = answer.getLanguageSubmitted() != null ? answer.getLanguageSubmitted().toLowerCase() : "javascript";
+        String languagePrompt = switch (submittedLanguage) {
             case "java" -> buildJavaCodingEvalSystemPrompt();
             case "python" -> buildPythonCodingEvalSystemPrompt();
             default -> buildJavascriptCodingEvalSystemPrompt();

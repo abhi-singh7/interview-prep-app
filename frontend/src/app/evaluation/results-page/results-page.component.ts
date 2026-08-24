@@ -1,4 +1,4 @@
-import { Component, ChangeDetectionStrategy } from '@angular/core';
+import { Component, ChangeDetectionStrategy, OnDestroy } from '@angular/core';
 import { CommonModule, NgIf } from '@angular/common';
 import { ActivatedRoute, RouterModule } from '@angular/router';
 import { MatButtonModule } from '@angular/material/button';
@@ -18,11 +18,12 @@ import { HighlightBlockComponent } from '../../shared/components/highlight-block
   imports: [CommonModule, NgIf, RouterModule, MatButtonModule, MatCardModule, MatProgressSpinnerModule, MatSnackBarModule, MatChipsModule, HighlightBlockComponent],
   template: `
     <div class="results-container">
-      <!-- Loading state during evaluation -->
-      <ng-container *ngIf="loading; else resultsContent">
+      <!-- Loading state during evaluation (initial load or polling for in-flight evals) -->
+      <ng-container *ngIf="loading || polling; else resultsContent">
         <div class="evaluating">
           <mat-spinner diameter="64"></mat-spinner>
-          <p>Evaluating your answers...</p>
+          <p>{{ polling ? 'Continuing to evaluate your answers…' : 'Evaluating your answers...' }}</p>
+          <button mat-raised-button color="primary" (click)="reloadResults()" [disabled]="polling">Reload results</button>
         </div>
       </ng-container>
 
@@ -44,7 +45,7 @@ import { HighlightBlockComponent } from '../../shared/components/highlight-block
                   <mat-card-header><mat-card-title>Evaluation Failed</mat-card-title></mat-card-header>
                   <mat-card-content>
                     <p>{{ eval.questionText }}</p>
-                    <button mat-raised-button color="warn" (click)="retryEvaluation(eval.evaluationId)">Retry Evaluation</button>
+                    <button mat-raised-button color="warn" (click)="retryEvaluation(eval.answerId)">Retry Evaluation</button>
                   </mat-card-content>
                 </mat-card>
               </ng-template>
@@ -163,10 +164,20 @@ import { HighlightBlockComponent } from '../../shared/components/highlight-block
     }
   `]
 })
-export class ResultsPageComponent {
+export class ResultsPageComponent implements OnDestroy {
   loading = true;
   results: any = null;
   scoreClass = 'low';
+
+  // FIX-12: keep polling while evaluations are still in-flight (e.g. after the forced
+  // navigation at ~30s lands on partially-populated results). Stop once the eval count
+  // stops growing or we hit the poll cap, so there is always a client-side recovery path.
+  polling = false;
+  private pollTimer: any = null;
+  private pollCount = 0;
+  private lastEvalCount = -1;
+  private readonly MAX_POLLS = 8;
+  private readonly POLL_INTERVAL_MS = 5000;
 
   constructor(
     private route: ActivatedRoute,
@@ -174,6 +185,13 @@ export class ResultsPageComponent {
     private snackBar: MatSnackBar,
     private cdr: ChangeDetectorRef,
   ) {}
+
+  ngOnDestroy(): void {
+    if (this.pollTimer) {
+      clearInterval(this.pollTimer);
+      this.pollTimer = null;
+    }
+  }
 
   ngOnInit(): void {
     const sessionId = Number(this.route.snapshot.paramMap.get('sessionId'));
@@ -187,13 +205,81 @@ export class ResultsPageComponent {
         this.scoreClass = this.computeScoreClass(res);
         this.loading = false;
         this.cdr.markForCheck();
+        // FIX-12: if results are still being produced, keep polling until they stabilize.
+        this.startPolling();
       },
       error: () => {
         this.snackBar.open('Failed to load results', 'Close', { duration: 3000 });
         this.loading = false;
         this.cdr.markForCheck();
+        // FIX-12: transient failure — retry via polling so we don't get stuck on a blank page.
+        this.startPolling();
       }
     });
+  }
+
+  // FIX-12: force an immediate refetch while polling is active.
+  reloadResults(): void {
+    const sessionId = Number(this.route.snapshot.paramMap.get('sessionId'));
+    if (isNaN(sessionId)) return;
+    this.interviewService.getResults(sessionId).subscribe({
+      next: (res: any) => {
+        this.results = res;
+        this.scoreClass = this.computeScoreClass(res);
+        this.lastEvalCount = -1; // reset stabilization counter after a manual reload
+        this.cdr.markForCheck();
+      },
+      error: () => {
+        this.snackBar.open('Reload failed', 'Close', { duration: 3000 });
+      }
+    });
+  }
+
+  private startPolling(): void {
+    if (this.pollTimer || this.polling) return;
+    this.polling = true;
+    this.pollCount = 0;
+    this.lastEvalCount = -1;
+    this.cdr.markForCheck();
+    this.pollTimer = setInterval(() => {
+      const sessionId = Number(this.route.snapshot.paramMap.get('sessionId'));
+      if (isNaN(sessionId)) {
+        this.stopPolling();
+        return;
+      }
+      this.interviewService.getResults(sessionId).subscribe({
+        next: (res: any) => {
+          if (!res || !res.evaluations) return;
+          const count = res.evaluations.length;
+          // Stable for one interval → evaluations are done.
+          if (count === this.lastEvalCount && this.lastEvalCount !== -1) {
+            this.stopPolling();
+            return;
+          }
+          this.results = res;
+          this.scoreClass = this.computeScoreClass(res);
+          this.lastEvalCount = count;
+          this.cdr.markForCheck();
+          if (++this.pollCount >= this.MAX_POLLS) {
+            this.stopPolling();
+          }
+        },
+        error: () => {
+          if (++this.pollCount >= this.MAX_POLLS) {
+            this.stopPolling();
+          }
+        }
+      });
+    }, this.POLL_INTERVAL_MS);
+  }
+
+  private stopPolling(): void {
+    if (this.pollTimer) {
+      clearInterval(this.pollTimer);
+      this.pollTimer = null;
+    }
+    this.polling = false;
+    this.cdr.markForCheck();
   }
 
   private computeScoreClass(res: any): string {
@@ -207,9 +293,10 @@ export class ResultsPageComponent {
     this.interviewService.retryEvaluation(answerId).subscribe({
       next: (evalResult: any) => {
         if (this.results) {
-          const idx = this.results.evaluations.findIndex((e: any) => e.evaluationId === answerId);
+          const idx = this.results.evaluations.findIndex((e: any) => e.answerId === answerId);
           if (idx !== -1) {
             this.results.evaluations[idx] = evalResult;
+            this.cdr.markForCheck();
           }
         }
       },

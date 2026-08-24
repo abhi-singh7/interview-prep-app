@@ -1,6 +1,6 @@
-import { Injectable } from '@angular/core';
+import { Injectable, signal } from '@angular/core';
 import { HttpClient, HttpParams } from '@angular/common/http';
-import { Observable, BehaviorSubject, firstValueFrom, lastValueFrom } from 'rxjs';
+import { Observable, BehaviorSubject, lastValueFrom } from 'rxjs';
 
 export interface LanguageOption {
   id: string;
@@ -18,7 +18,11 @@ export class DropdownDataService {
   
   // Cache for languages to avoid repeated API calls
   private languagesCache$: BehaviorSubject<LanguageOption[]> | null = null;
-  
+
+  // FIX-08: expose failure state so components can show a retry instead of rendering blank forever
+  private readonly _languagesError$ = signal(false);
+  languagesError$ = this._languagesError$.asReadonly();
+
   constructor(private http: HttpClient) {}
 
   getLanguages(): Observable<LanguageOption[]> {
@@ -40,18 +44,27 @@ export class DropdownDataService {
 
     // Fetch from API if not cached — use firstValueFrom to avoid Subscription return type issue
     const obs = this.http.get<LanguageOption[]>(`${this.apiUrl}/languages`);
+    // FIX-08: only populate the cache on success. On error, surface it via languagesError$ +
+    // refetchLanguages() instead of overwriting the cache with an empty list (which blanked all dropdowns).
     lastValueFrom(obs).then(
       (data) => {
         sessionStorage.setItem('languages_cache', JSON.stringify(data));
         this.languagesCache$ = new BehaviorSubject<LanguageOption[]>(data);
+        this._languagesError$.set(false);
       },
       () => {
-        // Set empty on error so UI can show failure state
-        this.languagesCache$ = new BehaviorSubject<LanguageOption[]>([]);
+        this._languagesError$.set(true);
       }
     );
 
     return obs;
+  }
+
+  // FIX-08: retry a failed languages fetch (e.g. from a retry button or on next open)
+  refetchLanguages(): void {
+    if (!this.languagesCache$) {
+      this.getLanguages();
+    }
   }
 
   getTopicsByLanguage(langId: string): Observable<TopicOption[]> {

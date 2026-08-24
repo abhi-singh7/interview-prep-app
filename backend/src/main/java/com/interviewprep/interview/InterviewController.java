@@ -23,6 +23,8 @@ import java.util.stream.Collectors;
 public class InterviewController {
 
     private static final org.slf4j.Logger logger = org.slf4j.LoggerFactory.getLogger(InterviewController.class);
+    // FIX-11: upper bound on questions per session (prevents unbounded AI generation)
+    private static final int MAX_QUESTION_COUNT = 20;
 
     private final EntityManager entityManager;
     private final AiGatewayService aiGatewayService;
@@ -34,6 +36,11 @@ public class InterviewController {
     private final AuthenticationContext authContext;
     private final TopicAutoSelectionService topicAutoSelectionService;
     private final CategoryRepository categoryRepository;
+
+    // FIX-16: reuse a single JsonMapper instance instead of building one per loop iteration
+    private final JsonMapper jsonMapper = JsonMapper.builder().build();
+    // FIX-16: memoize resolved topic names per categoryId string to avoid N+1 category lookups
+    private final java.util.Map<String, List<String>> topicNamesCache = new java.util.HashMap<>();
 
     public InterviewController(EntityManager entityManager, AiGatewayService aiGatewayService, EmbeddingService embeddingService,
                                InterviewSessionRepository sessionRepository, QuestionRepository questionRepository,
@@ -60,6 +67,10 @@ public class InterviewController {
         if (request.getDifficulty() == null || request.getCount() <= 0) {
             return ResponseEntity.badRequest().body(null);
         }
+        // FIX-11: bound question generation to avoid unbounded AI cost / sessions
+        if (request.getCount() > MAX_QUESTION_COUNT) {
+            throw new IllegalArgumentException("Cannot generate more than " + MAX_QUESTION_COUNT + " questions at once");
+        }
 
         Long userId = authContext.getCurrentUserId();
         User user = entityManager.find(User.class, userId);
@@ -82,6 +93,8 @@ public class InterviewController {
         session.setTimeoutHours(2);
 
         sessionRepository.save(session);
+        java.util.List<Question> questions = new java.util.ArrayList<>();
+        try {
 
         // Generate questions via AI gateway — pass topic names and language name for prompt generation
         List<String> topicNames = resolveTopicNames(resolvedTopicIds);
@@ -98,7 +111,6 @@ public class InterviewController {
         List<com.interviewprep.output.QuestionRecord> questionRecords = aiGatewayService.generateQuestions(
                 contextForDisplay, request.getDifficulty(), request.getCount(), languageNameForPrompt, topicNames);
         
-        java.util.List<Question> questions = new java.util.ArrayList<>();
         for (var record : questionRecords) {
             Question q = new Question();
             q.setSession(session);
@@ -125,11 +137,9 @@ public class InterviewController {
                     }
                     q.setVectorEmbedding(doubleArray);
                 } catch (Exception e) {
-                    logger.warn("Failed to generate vector embedding for question: {}", textToEmbed, e);
-                    q.setVectorEmbedding(new double[768]);
+                    // FIX-17: leave the embedding null on failure rather than storing a zero vector
+                    logger.warn("Failed to generate vector embedding for question: {} (leaving null)", textToEmbed, e);
                 }
-            } else {
-                q.setVectorEmbedding(new double[768]);
             }
             
             questions.add(q);
@@ -139,6 +149,16 @@ public class InterviewController {
         for (Question q : questions) {
             q.setSession(session);
             questionRepository.save(q);
+        }
+        } catch (Exception e) {
+            // FIX-11: a gateway/valueOf failure must not leave an orphan ACTIVE session behind
+            logger.error("Failed to generate interview questions for sessionId={}: {}", session.getId(), e.getMessage(), e);
+            try {
+                sessionRepository.delete(session);
+            } catch (Exception ex) {
+                logger.warn("Failed to delete orphan session {}: {}", session.getId(), ex.getMessage());
+            }
+            throw e;
         }
 
         InterviewStartResponse response = new InterviewStartResponse();
@@ -242,8 +262,8 @@ public class InterviewController {
             long sessionId = session.getId();
             String category = session.getCategoryId();
 
-            // Count answered questions for this session
-            int answeredCount = answerRepository.findBySessionId(sessionId).size();
+            // FIX-04: count distinct questions answered (rows == distinct once dedup is enforced)
+            long answeredCount = answerRepository.countDistinctQuestionsBySessionId(sessionId);
 
             ObjectNode resumeInfo = JsonMapper.builder().build().createObjectNode();
             resumeInfo.put("sessionId", sessionId);
@@ -268,32 +288,16 @@ public class InterviewController {
         }
 
         try {
-            // Fetch questions for this session
-            logger.info("Fetching questions for sessionId={}, userId={}", session.getId(), userId);
-            
-            // Diagnostic: Count rows without loading vector embedding column to isolate pgvector issue
-            long questionCount = questionRepository.countBySessionId(session.getId());
-            logger.info("Diagnostic count query returned {} questions for sessionId={} (without vector_embedding)",
-                questionCount, session.getId());
-            
-            // Diagnostic: Check if any rows exist in the database directly (excluding vector column)
-            List<Object[]> nativeResult = questionRepository.findBySessionIdWithoutVector(session.getId());
-            logger.info("Native query (no vector_embedding) returned {} questions for sessionId={}",
-                nativeResult.size(), session.getId());
-            
-            // Diagnostic: Check if any rows exist in the database directly (with vector column - this may fail)
-            List<Question> rawQuestions = questionRepository.findBySessionId(session.getId());
-            logger.info("Raw query returned {} questions for sessionId={}", rawQuestions.size(), session.getId());
-            
-            List<Question> questions = rawQuestions;
+            // FIX-15: single query fetches the questions directly (diagnostic triple-query removed)
+            List<Question> questions = questionRepository.findBySessionId(session.getId());
             if (questions.isEmpty()) {
                 return ResponseEntity.noContent().build();
             }
 
-            JsonMapper mapper = JsonMapper.builder().build();
-            ArrayNode questionsArray = mapper.createArrayNode();
+            // FIX-16: reuse the shared JsonMapper instance instead of building one per request
+            ArrayNode questionsArray = jsonMapper.createArrayNode();
             for (Question q : questions) {
-                ObjectNode qNode = mapper.createObjectNode();
+                ObjectNode qNode = jsonMapper.createObjectNode();
                 qNode.put("id", q.getId());
                 qNode.put("type", q.getType().name());
                 qNode.put("categoryId", q.getCategoryId());
@@ -365,10 +369,9 @@ public class InterviewController {
                 // Persist evaluation to database so results survive page reloads
                 evaluationRepository.save(evaluation);
 
-                // Parse strengths and weaknesses from JSONB strings into lists
-                JsonMapper mapper = JsonMapper.builder().build();
-                ArrayNode strengthsArray = (ArrayNode) mapper.readTree(evaluation.getStrengthsJson());
-                ArrayNode weaknessesArray = (ArrayNode) mapper.readTree(evaluation.getWeaknessesJson());
+                // Parse strengths and weaknesses from JSONB strings into lists (FIX-16: shared mapper)
+                ArrayNode strengthsArray = (ArrayNode) jsonMapper.readTree(evaluation.getStrengthsJson());
+                ArrayNode weaknessesArray = (ArrayNode) jsonMapper.readTree(evaluation.getWeaknessesJson());
 
                 EvaluationDetail detail = new EvaluationDetail();
                 detail.setEvaluationId(evaluation.getId());
@@ -400,15 +403,26 @@ public class InterviewController {
                     detail.setSubmittedCode(answer.getAnswerText()); // Code is also in answerText for coding questions
                 }
 
-                // Resolve topic names from categoryId for display
-                detail.setTopicNames(resolveTopicNamesFromCategoryId(answer.getQuestion().getCategoryId()));
+                // FIX-16: memoize resolved topic names per categoryId to avoid N+1 category lookups
+                detail.setTopicNames(topicNamesCache.computeIfAbsent(
+                        answer.getQuestion().getCategoryId(), this::resolveTopicNamesFromCategoryId));
 
                 evaluations.add(detail);
                 totalScore += evaluation.getScore();
                 evaluatedCount++;
 
             } catch (Exception e) {
+                logger.error("Evaluation failed for answerId={}: {}", answer.getId(), e.getMessage());
+
+                // Persist a FAILED evaluation so it survives page refreshes and retry is reachable
+                Evaluation failedEvaluation = new Evaluation();
+                failedEvaluation.setAnswer(answer);
+                failedEvaluation.setStatus(EvaluationStatus.FAILED);
+                evaluationRepository.save(failedEvaluation);
+
                 EvaluationDetail failedEval = new EvaluationDetail();
+                failedEval.setEvaluationId(failedEvaluation.getId());
+                failedEval.setAnswerId(answer.getId());
                 failedEval.setQuestionType(answer.getQuestion().getType());
                 failedEval.setQuestionText(answer.getQuestion().getQuestionText());
                 failedEval.setStatus(EvaluationStatus.FAILED);
@@ -454,12 +468,9 @@ public class InterviewController {
                 Question question = eval.getAnswer().getQuestion();
                 Answer answer = eval.getAnswer();
 
-                JsonMapper mapper = JsonMapper.builder().build();
-                ArrayNode strengthsArray = (ArrayNode) mapper.readTree(eval.getStrengthsJson());
-                ArrayNode weaknessesArray = (ArrayNode) mapper.readTree(eval.getWeaknessesJson());
-
                 EvaluationDetail detail = new EvaluationDetail();
                 detail.setEvaluationId(eval.getId());
+                detail.setAnswerId(answer.getId());
                 detail.setQuestionType(question.getType());
                 detail.setQuestionText(question.getQuestionText());
                 detail.setScore(eval.getScore());
@@ -469,30 +480,43 @@ public class InterviewController {
                 detail.setTimeComplexity(eval.getTimeComplexity());
                 detail.setSpaceComplexity(eval.getSpaceComplexity());
 
+                // FAILED evaluations carry no AI payload (null JSONB fields); skip parsing for those
                 java.util.List<String> strengths = new java.util.ArrayList<>();
-                for (JsonNode sn : strengthsArray) {
-                    strengths.add(sn.asText());
+                if (eval.getStatus() == EvaluationStatus.SUCCESS && eval.getStrengthsJson() != null) {
+                    // FIX-16: shared mapper
+                    ArrayNode strengthsArray = (ArrayNode) jsonMapper.readTree(eval.getStrengthsJson());
+                    for (JsonNode sn : strengthsArray) {
+                        strengths.add(sn.asText());
+                    }
                 }
                 detail.setStrengths(strengths);
 
                 java.util.List<String> weaknesses = new java.util.ArrayList<>();
-                for (JsonNode wn : weaknessesArray) {
-                    weaknesses.add(wn.asText());
+                if (eval.getStatus() == EvaluationStatus.SUCCESS && eval.getWeaknessesJson() != null) {
+                    // FIX-16: shared mapper
+                    ArrayNode weaknessesArray = (ArrayNode) jsonMapper.readTree(eval.getWeaknessesJson());
+                    for (JsonNode wn : weaknessesArray) {
+                        weaknesses.add(wn.asText());
+                    }
                 }
                 detail.setWeaknesses(weaknesses);
 
                 detail.setImprovedAnswer(eval.getImprovedAnswer());
                 detail.setUserAnswerText(answer.getAnswerText());
-                if (answer.getQuestion().getType() == QuestionType.CODE) {
+                if (question.getType() == QuestionType.CODE) {
                     detail.setSubmittedCode(answer.getAnswerText());
                 }
 
-                // Resolve topic names from categoryId for display
-                detail.setTopicNames(resolveTopicNamesFromCategoryId(question.getCategoryId()));
+                // FIX-16: memoize resolved topic names per categoryId to avoid N+1 category lookups
+                detail.setTopicNames(topicNamesCache.computeIfAbsent(
+                        question.getCategoryId(), this::resolveTopicNamesFromCategoryId));
 
                 evaluations.add(detail);
-                totalScore += eval.getScore();
-                evaluatedCount++;
+                // Only successful evaluations contribute to the overall score; FAILED ones are listed so retry is reachable
+                if (eval.getStatus() == EvaluationStatus.SUCCESS && eval.getScore() != null) {
+                    totalScore += eval.getScore();
+                    evaluatedCount++;
+                }
             }
 
             double overallScore = evaluatedCount > 0 ? totalScore / evaluatedCount : 0;

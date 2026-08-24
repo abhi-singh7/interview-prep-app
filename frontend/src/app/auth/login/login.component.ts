@@ -1,4 +1,4 @@
-import { Component, ChangeDetectionStrategy } from '@angular/core';
+import { Component, ChangeDetectionStrategy, ChangeDetectorRef } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { Router, RouterModule } from '@angular/router';
 import { FormBuilder, FormGroup, FormsModule, ReactiveFormsModule, Validators } from '@angular/forms';
@@ -63,6 +63,7 @@ export class LoginComponent {
     private authService: AuthService,
     private router: Router,
     private snackBar: MatSnackBar,
+    private cdr: ChangeDetectorRef,
   ) {}
 
   onLogin(): void {
@@ -82,6 +83,8 @@ export class LoginComponent {
         const msg = err.error?.error || 'Invalid credentials';
         this.snackBar.open(msg, 'Close', { duration: 5000 });
         this.loading = false;
+        // FIX-20: explicitly trigger change detection for this OnPush component
+        this.cdr.markForCheck();
       }
     });
   }

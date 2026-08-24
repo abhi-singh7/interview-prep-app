@@ -58,6 +58,8 @@ public class Question {
     public void setDescription(String description) { this.description = description; }
     public String getCodePrompt() { return codePrompt; }
      public void setCodePrompt(String codePrompt) { this.codePrompt = codePrompt; }
+    // FIX-10: never serialize the 768-float embedding over HTTP (frontend never reads it)
+    @com.fasterxml.jackson.annotation.JsonIgnore
     public double[] getVectorEmbedding() { return vectorEmbedding; }
     public void setVectorEmbedding(double[] vectorEmbedding) { this.vectorEmbedding = vectorEmbedding; }
 

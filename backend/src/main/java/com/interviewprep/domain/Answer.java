@@ -3,7 +3,7 @@ package com.interviewprep.domain;
 import jakarta.persistence.*;
 
 @Entity
-@Table(name = "answers")
+@Table(name = "answers", uniqueConstraints = {@UniqueConstraint(name = "uq_answers_session_question", columnNames = {"session_id", "question_id"})})
 public class Answer {
 
     @Id

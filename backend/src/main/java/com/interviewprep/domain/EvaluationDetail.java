@@ -6,6 +6,10 @@ import java.util.List;
 @Data
 public class EvaluationDetail {
     private Long evaluationId;
+
+    // The answer this evaluation belongs to (used by the retry endpoint)
+    private Long answerId;
+
     private QuestionType questionType;
     private String questionText;
     private Integer score;

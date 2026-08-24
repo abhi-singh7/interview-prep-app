@@ -6,6 +6,9 @@ import org.springframework.stereotype.Service;
 @Service
 public class EmbeddingService {
 
+    // FIX-17: single source of truth for the vector column dimensionality instead of a magic 768.
+    public static final int EMBEDDING_DIMENSION = 768;
+
     private final EmbeddingModel embeddingModel;
 
     public EmbeddingService(EmbeddingModel embeddingModel) {

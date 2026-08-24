@@ -6,7 +6,7 @@ import org.hibernate.type.SqlTypes;
 import java.time.LocalDateTime;
 
 @Entity
-@Table(name = "evaluations")
+@Table(name = "evaluations", uniqueConstraints = {@UniqueConstraint(name = "uq_evaluations_one_per_answer", columnNames = {"answer_id"})})
 public class Evaluation {
 
     @Id

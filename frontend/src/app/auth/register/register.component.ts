@@ -1,4 +1,4 @@
-import { Component, ChangeDetectionStrategy } from '@angular/core';
+import { Component, ChangeDetectionStrategy, ChangeDetectorRef } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { Router, RouterModule } from '@angular/router';
 import { FormBuilder, FormGroup, FormsModule, ReactiveFormsModule, Validators } from '@angular/forms';
@@ -42,6 +42,7 @@ import { AuthService } from '../../services/auth.service';
               <mat-label>Confirm Password</mat-label>
               <input matInput formControlName="confirmPassword" type="password" required>
               <mat-error *ngIf="registerForm.get('confirmPassword')?.hasError('required')">Please confirm password</mat-error>
+              <mat-error *ngIf="registerForm.get('confirmPassword')?.hasError('passwordsMismatch')">Passwords do not match</mat-error>
             </mat-form-field>
 
             <button mat-raised-button color="primary" type="submit" [disabled]="loading">
@@ -78,6 +79,7 @@ export class RegisterComponent {
     private authService: AuthService,
     private router: Router,
     private snackBar: MatSnackBar,
+    private cdr: ChangeDetectorRef,
   ) {}
 
   onRegister(): void {
@@ -93,6 +95,8 @@ export class RegisterComponent {
         const msg = err.error?.error || 'Registration failed';
         this.snackBar.open(msg, 'Close', { duration: 5000 });
         this.loading = false;
+        // FIX-20: explicitly trigger change detection for this OnPush component
+        this.cdr.markForCheck();
       }
     });
   }
