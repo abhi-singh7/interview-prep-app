@@ -31,6 +31,10 @@ export class InterviewSignalService {
   clearCurrentSession(): void {
     this.currentSessionId.set(null);
     sessionStorage.removeItem('interview_session_id');
+    // Drop per-question cached text so a brand-new session never resurrects drafts
+    // from the previous one (question ids are DB-global, but dev resets can reuse them).
+    this.answers.clear();
+    this.codingSubmissions.clear();
   }
 
   constructor(private http: HttpClient) {}
@@ -45,6 +49,20 @@ export class InterviewSignalService {
 
   getQuestionsForSession(sessionId: number): Observable<any[]> {
     return this.http.get<any[]>(`${this.apiUrl}/session/${sessionId}/questions`);
+  }
+
+  // Fetch the already-submitted answers for a session (restores them on resume/refresh).
+  getAnswersForSession(sessionId: number): Observable<any[]> {
+    return this.http.get<any[]>(`${this.apiUrl}/session/${sessionId}/answers`);
+  }
+
+  // My Sessions page (restored from origin/main)
+  getUserSessions(): Observable<any[]> {
+    return this.http.get<any[]>(`${this.apiUrl}/session/list`);
+  }
+
+  getSessionDetail(sessionId: number): Observable<any> {
+    return this.http.get(`${this.apiUrl}/session/${sessionId}/detail`);
   }
 
   submitAnswer(questionId: number, answerText: string): Observable<void> {
@@ -74,6 +92,10 @@ export class InterviewSignalService {
   getPerformanceData(): Observable<any> {
     return this.http.get(`${this.analyticsUrl}/performance`);
   }
+
+  // NOTE: these maps are the single source of truth for "known answer text per question"
+  // during an active session — they hold live drafts (written through on every keystroke)
+  // as well as server-persisted answers. Keys are globally-unique question ids.
 
   storeAnswer(questionId: number, answerText: string): void {
     this.answers.set(questionId, answerText);

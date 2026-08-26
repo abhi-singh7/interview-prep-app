@@ -154,6 +154,14 @@
             <artifactId>spring-boot-starter-test</artifactId>
             <scope>test</scope>
         </dependency>
+        <!-- spring-security-test provides MockMvc's springSecurity() integration, required to
+             enforce the SecurityFilterChain in controller tests (SB4 no longer pulls it via starter-test) -->
+        <dependency>
+            <groupId>org.springframework.security</groupId>
+            <artifactId>spring-security-test</artifactId>
+            <version>7.0.0</version>
+            <scope>test</scope>
+        </dependency>
         <dependency>
             <groupId>com.h2database</groupId>
             <artifactId>h2</artifactId>

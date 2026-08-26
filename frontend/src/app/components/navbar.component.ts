@@ -21,6 +21,7 @@ import { Subscription } from 'rxjs';
 
       <!-- Page navigation links — show based on current route -->
       <a [routerLink]="interviewRoute" mat-button *ngIf="authService.isAuthenticated$()" routerLinkActive="active-link">Interview</a>
+      <a routerLink="/interview/my-sessions" mat-button *ngIf="authService.isAuthenticated$()" routerLinkActive="active-link" [routerLinkActiveOptions]="{ exact: true }">My Sessions</a>
       <a routerLink="/analytics" mat-button *ngIf="authService.isAuthenticated$()" routerLinkActive="active-link" [routerLinkActiveOptions]="{ exact: true }">Analytics</a>
 
       <!-- User info and logout -->

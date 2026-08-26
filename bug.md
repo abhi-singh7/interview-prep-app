@@ -163,6 +163,30 @@ Add `@ControllerAdvice` mapping `IllegalArgumentException` → 400 with a messag
 ### FIX-20 · Loading-flag CD hardening (login/register)
 Inject `ChangeDetectorRef` and call `markForCheck()` after setting `loading=false` instead of relying on snackbar side-effects (AGENTS.md rule #2).
 
+### FIX-21 · Evaluation prompts omit reference answer + rubric → bimodal marks
+**Location:** `AiGatewayService.buildTheoryEvaluationPrompt / buildCodingEvaluationPrompt`
+Verified in DB (`interview_prep`, 25 SUCCESS evals, avg 5.76): distribution is bimodal — 4×0, 7×(1–4), **no scores in the middle (5–7)**, 14×(8–10). Theory avg 5.1 < Code avg 6.0.
+Root cause: `Question.referenceAnswer` is stored per question and shown on results, but neither evaluation prompt passes it to the evaluator — grading rests on the model's own judgment instead of comparison against the stored gold answer, so marks drift by run. Prompts also ask for "score: integer 0-10" with no anchored rubric (what a 4 vs an 8 looks like), which pushes LLMs toward extremes.
+Fix: include the question's `referenceAnswer` in both evaluation prompts as the grading standard, and add explicit score anchors (e.g. 9–10 = matches reference answer; 5–7 = mostly correct with minor gaps; ≤4 = missing key concepts). Consider passing difficulty to code evaluations too (currently theory-only).
+
+### FIX-22 · Persisted scores are not clamped/validated
+**Location:** `AiGatewayService.mapToEvaluation`, `output/EvaluationRecord`
+`EvaluationRecord.score` only carries a description ("Score rating of 0-10") — no JSON-schema bounds and no clamp before persisting. All current rows happen to be in range, but nothing stops the model returning e.g. 42, which would break the `/10` display (`results-page`, `analytics-page`) and skew analytics averages.
+Fix: clamp score to [0, 10] (or reject) when mapping to `Evaluation`; optionally add `@Min(0)/@Max(10)` if Spring AI's structured-output schema generation honors jakarta validation annotations on the record.
+Done: clamp + WARN log in `mapToEvaluation`.
+
+### FIX-23 · Reference answers for coding questions are prose, not code
+**Location:** `AiGatewayService.buildGenerationPrompt`, `buildReferenceAnswerPrompt`
+The results page shows `Question.referenceAnswer` as "Correct Answer", and evaluations now grade against it (FIX-21) — but both generators produced **theory-style prose** for CODE questions. E.g. a generated "Routing Code Implementation" question (Angular, `RouterModule.forRoot()`) stored a prose explanation of path-vs-hash routing with no code at all.
+Root cause: instructions were ambiguous — batch generation said "an optimal solution with approach and complexity (coding)" (reads like an essay spec), backfill said "describe the optimal approach, include the solution code…" (code optional/secondary). The local 2B model defaults to prose when code isn't mandated.
+Fix: type-specific instructions — CODE references MUST be a complete runnable solution in actual code (batch prompt + fenced-code-block backfill variant matching the starter code's language); THEORY keeps concise conceptual answers. Backfill prompt split into two explicit variants.
+Caveat: `ensureReferenceAnswers` only fills *missing* references, so already-stored prose references persist. **User decision: legacy data left as-is** — no forced regeneration; all fixes apply to newly generated questions.
+
+### FIX-24 · Generator swaps the type label to balance THEORY/CODE mix → wrong editor UI + wrong evaluator
+**Location:** `AiGatewayService.generateQuestions` (new `normalizeGeneratedRecords` / `reconcileRecord`), generation prompt
+Live verification of FIX-23 exposed this: a single Easy/3 batch produced a reverseString task with Java starter code labeled **THEORY**, and a pure "Explain Time & Space Complexity" essay labeled **CODE** (no starter code). The 2B model balances the required THEORY+CODE mix by swapping labels after writing content. Consequences: FE shows the wrong editor, `InterviewEvaluationService` picks the wrong evaluator (coding rubric on an explanation / theory rubric on a coding task), and results display references that don't match the question's nature — user-visible as "correct answer is instructions, not code".
+Fix: content-based reconciliation right after generation — starter code present ⇒ CODE; essay-verb question+description with no code fields ⇒ THEORY (each flip logged at WARN). The model also prefixes its own references with a cosmetic `CODE:` / `THEORY:` token — stripped on all records. Prompt now instructs to decide type by ideal-answer format before writing.
+
 ---
 
 ## Test & regression checklist (run after each priority batch)
@@ -170,6 +194,8 @@ Inject `ChangeDetectorRef` and call `markForCheck()` after setting `loading=fals
 - [x] Complete a full interview session end-to-end; confirm results survive browser refresh with identical question set.
 - [ ] Stop LM Studio mid-finish → failed questions remain visible on results + retry works after service restarts. (runtime check — see FIX-01)
 - [x] Analytics: history has exactly one row per completed session; all scores in 0–10 range; category names (not IDs) shown; multi-topic questions counted. (query rewritten — FIX-02/03/06/07)
+- [x] Eval marks anchored: new evaluation prompts contain the question's reference answer + scoring rubric; out-of-range model scores are clamped to 0–10 with a WARN log. (FIX-21/22 — verified live on scratch DB: both eval requests contained "Reference Answer (grading standard)" + rubric, scores in range)
+- [ ] Coding reference answers are code: newly generated CODE questions store runnable implementations (no prose-only), and results page shows actual code as "Correct Answer"; type labels match content after reconciliation (WARN in backend log on flip). (FIX-23/24 — verify by starting a session and inspecting `questions.reference_answer` + question types)
 - [x] Duplicate answer submission via devtools → single DB row. (unique constraint + dedup — FIX-04)
 - [x] Cross-session answer POST rejected with 4xx. (ownership validation — FIX-05)
 - [x] Dark mode persists across reload and applies to login/register/results pages. (init() in app root — FIX-09)
@@ -179,3 +205,11 @@ Inject `ChangeDetectorRef` and call `markForCheck()` after setting `loading=fals
 - Async finish with SSE progress (optional part 2 of FIX-12).
 - Question similarity features currently disabled by zero-vector fallbacks (consequence of FIX-17).
 - Any auth flow changes — current JWT/cookie/CSRF setup passed review.
+
+### Restoration · My Sessions + Session Detail pages (lost with the branch re-root)
+The feature existed only on `origin/main` — this branch was rebuilt from an initial snapshot that excluded it. Restored: `SessionDetailController` (`GET /interview/session/list`, `/interview/session/{id}/detail`) + `InterviewSessionDetailResponse` DTO, FE `MySessionsComponent` + `SessionDetailComponent`, routes `/interview/my-sessions` (before `:sessionId`) and `/interview/detail/:sessionId`, navbar link, service methods (`getUserSessions`, `getSessionDetail`). **Conflict resolved:** the restored controller's duplicate `GET /{id}/answers` was dropped — `InterviewController` already owns that path for resume sync. Verified live on scratch DB (list=3 sessions, detail=COMPLETED session with per-question scores 0/1 → overallScore 0.5, answers OK); FE production build bundles both components.
+
+### FIX-25 · Answers silently dropped when `currentSessionId()` is null (sessions 98/99 completed with zero answers)
+**Symptom:** My Sessions → View Details showed a COMPLETED session as entirely "UNANSWERED" — the detail view was *correct*: the DB had zero answer rows for sessions 98 and 99. `InterviewPageComponent.submitAnswer()` early-returned when `interviewService.currentSessionId()` was null (new tab / cleared sessionStorage — the id is only ever set in setup-page after a fresh start) → **no request sent, no toast**, user finished with nothing stored.
+**Fixes:** (1) submit now shows a snackbar instead of silently returning; (2) `loadCurrentQuestions` syncs the service's session id from the route when it's null; (3) BE `/finish` logs WARN with answered/unanswered counts (`completed with only {n}/{total} answers submitted`).
+**Verified:** persistence path live on current build — answer POST 200, row in DB for its session, finish 202. FE production build clean.

@@ -9,7 +9,10 @@ export const routes: Routes = [
     path: 'interview', canActivate: [AuthGuard], children: [
       { path: '', redirectTo: '/interview/setup', pathMatch: 'full' },
       { path: 'setup', loadComponent: () => import('./interview/setup-page/interview-setup.component').then(m => m.InterviewSetupComponent) },
+      // My Sessions — must precede ':sessionId' or it would match as a session id
+      { path: 'my-sessions', loadComponent: () => import('./interview/my-sessions/my-sessions.component').then(m => m.MySessionsComponent) },
       { path: ':sessionId', loadComponent: () => import('./interview/interview-page/interview-page.component').then(m => m.InterviewPageComponent) },
+      { path: 'detail/:sessionId', loadComponent: () => import('./interview/session-detail/session-detail.component').then(m => m.SessionDetailComponent) },
     ]
   },
   { path: 'results/:sessionId', canActivate: [AuthGuard], loadComponent: () => import('./evaluation/results-page/results-page.component').then(m => m.ResultsPageComponent) },

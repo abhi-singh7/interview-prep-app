@@ -8,11 +8,12 @@
 ## Directory layout
 ```
 backend/src/main/java/com/interviewprep/
+  ai/            — LlmLoggingAdvisor (Spring AI advisor logging all LLM requests/responses)
   analytics/     — AnalyticsController, AnalyticsService (native SQL queries)
   auth/          — AuthController (register/login/logout/status)
   config/        — SecurityConfig, JwtAuthenticationFilter, SpaFallbackController, AuthenticationContext
-  domain/        — Entities: User, InterviewSession, Question, Answer, Evaluation, Category + Repositories
-  interview/     — InterviewController, AnswerSubmissionController, EvaluationController, LanguagesTopicsController
+  domain/        — Entities: User, InterviewSession, Question, Answer, Evaluation, Category, LlmInteractionLog, InterviewSessionDetailResponse + Repositories
+  interview/     — InterviewController, AnswerSubmissionController, EvaluationController, SessionDetailController (/interview/session/list + /detail), LanguagesTopicsController
 
 frontend/src/app/
   analytics/          — AnalyticsPageComponent (charts via ng2-charts)
@@ -20,7 +21,7 @@ frontend/src/app/
   components/         — NavbarComponent
   evaluation/         — ResultsPageComponent
   guards/             — AuthGuard, IdlePreloadingStrategy
-  interview/          — SetupPage, InterviewPage, CodingQuestion, TheoryQuestion components
+  interview/          — SetupPage, InterviewPage, MySessions, SessionDetail pages; CodingQuestion/TheoryQuestion components
   interceptors/       — CsrfTokenInterceptor (GET uses cookie; non-GET adds X-XSRF-TOKEN header)
   services/           — AuthService (signals), InterviewSignalService, ThemeService
   shared/theme/       — ThemeService (signal-based dark/light toggle), constants

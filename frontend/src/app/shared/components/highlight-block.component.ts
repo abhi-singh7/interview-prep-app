@@ -1,4 +1,4 @@
-import { Component, Input, OnInit } from '@angular/core';
+import { Component, Input, OnInit, ChangeDetectionStrategy, signal } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { MatButtonModule } from '@angular/material/button';
 import { MatIconModule } from '@angular/material/icon';
@@ -9,12 +9,13 @@ import { HighlightService } from '../services/highlight.service';
 @Component({
   selector: 'app-highlight-block',
   standalone: true,
+  changeDetection: ChangeDetectionStrategy.OnPush,
   imports: [CommonModule, MatButtonModule, MatIconModule, MatSnackBarModule],
   template: `
-    <div class="highlight-wrapper" *ngIf="renderedCode">
+    <div class="highlight-wrapper" *ngIf="renderedCode()">
       <div class="highlight-actions">
-        <button mat-icon-button [attr.aria-label]="copied ? 'Copied' : 'Copy code'" (click)="copyToClipboard()">
-          @if (copied) {
+        <button mat-icon-button [attr.aria-label]="copied() ? 'Copied' : 'Copy code'" (click)="copyToClipboard()">
+          @if (copied()) {
             <mat-icon>check</mat-icon>
           } @else {
             <mat-icon>content_copy</mat-icon>
@@ -22,8 +23,8 @@ import { HighlightService } from '../services/highlight.service';
         </button>
       </div>
       <div class="highlight-container">
-        <div class="line-numbers" [innerHTML]="lineNumbers"></div>
-        <pre><code [innerHTML]="renderedCode"></code></pre>
+        <div class="line-numbers" [innerHTML]="lineNumbers()"></div>
+        <pre><code [innerHTML]="renderedCode()"></code></pre>
       </div>
     </div>
   `,
@@ -68,16 +69,21 @@ export class HighlightBlockComponent implements OnInit {
   @Input() code = '';
   @Input() lang = '';
 
-  renderedCode = '';
-  lineNumbers = '';
-  copied = false;
+  // Signal-based state so async writes (highlight resolves in a microtask) are picked up by
+  // OnPush change detection — plain property assignment here would never reach the template.
+  readonly renderedCode = signal('');
+  readonly lineNumbers = signal('');
+  readonly copied = signal(false);
+
+  // Guards against out-of-order completions when `code` changes while a highlight is in flight.
+  private renderSeq = 0;
 
   constructor(
     private highlightService: HighlightService,
   ) {}
 
-  async ngOnInit(): Promise<void> {
-    await this.render();
+  ngOnInit(): void {
+    this.render();
   }
 
   ngOnChanges(): void {
@@ -85,14 +91,22 @@ export class HighlightBlockComponent implements OnInit {
   }
 
   private async render(): Promise<void> {
-    if (!this.code) return;
+    const seq = ++this.renderSeq;
+
+    if (!this.code) {
+      this.renderedCode.set('');
+      this.lineNumbers.set('');
+      return;
+    }
 
     const result = await this.highlightService.highlight(this.code, this.lang);
-    this.renderedCode = result.value;
+    if (seq !== this.renderSeq) return; // stale result — a newer render superseded it
+
+    this.renderedCode.set(result.value);
 
     // Build line numbers from the raw code (count newlines + 1)
     const lines = this.countLines(result.raw || this.code);
-    this.lineNumbers = Array.from({ length: lines }, (_, i) => `<span>${i + 1}</span>`).join('\n');
+    this.lineNumbers.set(Array.from({ length: lines }, (_, i) => `<span>${i + 1}</span>`).join('\n'));
   }
 
   private countLines(text: string): number {
@@ -102,21 +116,21 @@ export class HighlightBlockComponent implements OnInit {
 
   async copyToClipboard(): Promise<void> {
     try {
-      const raw = this.highlightService.getRawText(this.renderedCode);
+      const raw = this.highlightService.getRawText(this.renderedCode());
       await navigator.clipboard.writeText(raw);
-      this.copied = true;
-      setTimeout(() => (this.copied = false), 2000);
+      this.copied.set(true);
+      setTimeout(() => this.copied.set(false), 2000);
     } catch {
       // Fallback: try selectAll + execCommand for insecure contexts
       try {
         const textarea = document.createElement('textarea');
-        textarea.value = this.highlightService.getRawText(this.renderedCode);
+        textarea.value = this.highlightService.getRawText(this.renderedCode());
         document.body.appendChild(textarea);
         textarea.select();
         document.execCommand('copy');
         document.body.removeChild(textarea);
-        this.copied = true;
-        setTimeout(() => (this.copied = false), 2000);
+        this.copied.set(true);
+        setTimeout(() => this.copied.set(false), 2000);
       } catch { /* ignore */ }
     }
   }

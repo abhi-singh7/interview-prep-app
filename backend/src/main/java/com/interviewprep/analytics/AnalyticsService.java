@@ -81,17 +81,15 @@ public class AnalyticsService {
                 ") " +
                 "SELECT sa.session_id, sa.ended_at, sa.difficulty, sa.avg_score, sc.category_name " +
                 "FROM session_avg sa " +
-                "LEFT JOIN session_cat sc ON sc.session_id = sa.session_id " +
-                "ORDER BY sa.ended_at DESC")
+                 "LEFT JOIN session_cat sc ON sc.session_id = sa.session_id " +
+                 "ORDER BY sa.ended_at DESC")
                 .setParameter("userId", userId)
-                .unwrap(NativeQuery.class)
-                .setResultTransformer(Transformers.ALIAS_TO_ENTITY_MAP)
                 .getResultList();
 
         List<SessionSummary> sessions = sessionRows.stream().map(row -> {
             SessionSummary summary = new SessionSummary();
             summary.setSessionId(((Number) row[0]).longValue());
-            summary.setEndedAt((java.time.LocalDateTime) row[1]);
+            summary.setEndedAt(toLocalDateTime(row[1]));
             Object difficultyObj = row[2];
             summary.setDifficulty(difficultyObj != null ? difficultyObj.toString() : "N/A");
             Object scoreObj = row[3];
@@ -110,6 +108,18 @@ public class AnalyticsService {
         response.setSessions(sessions);
 
         return response;
+    }
+
+    // Native queries can hand back Postgres TIMESTAMP as either a LocalDateTime or a raw
+    // java.sql.Timestamp depending on the Hibernate/JDBC driver path; normalize both.
+    private static java.time.LocalDateTime toLocalDateTime(Object value) {
+        if (value == null) return null;
+        if (value instanceof java.time.LocalDateTime ldt) return ldt;
+        if (value instanceof java.sql.Timestamp ts) return ts.toLocalDateTime();
+        if (value instanceof java.util.Date d) {
+            return new java.sql.Timestamp(d.getTime()).toLocalDateTime();
+        }
+        throw new IllegalStateException("Unexpected type for ended_at: " + value.getClass().getName());
     }
 
     private Map<String, Double> categoryMapperToMap(ObjectNode node) {

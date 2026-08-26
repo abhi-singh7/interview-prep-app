@@ -17,4 +17,7 @@ public interface InterviewSessionRepository extends JpaRepository<InterviewSessi
 
     @Query("SELECT s FROM InterviewSession s WHERE s.user.id = :userId AND s.status = 'ACTIVE' ORDER BY s.startedAt DESC LIMIT 1")
     Optional<InterviewSession> findFirstByUserIdAndStatusOrderByStartedAtDesc(Long userId, SessionStatus status);
+
+    // My Sessions page (restored from origin/main)
+    List<InterviewSession> findByUserIdOrderByStartedAtDesc(Long userId);
 }

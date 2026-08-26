@@ -1,4 +1,4 @@
-import { Component, Input, ChangeDetectionStrategy } from '@angular/core';
+import { Component, Input, Output, EventEmitter, OnChanges, SimpleChanges, ChangeDetectionStrategy } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { MatCardModule } from '@angular/material/card';
@@ -34,7 +34,9 @@ import { HighlightBlockComponent } from '../../shared/components/highlight-block
           <!-- Language dropdown — dynamic from API -->
           <mat-form-field appearance="fill" class="full-width language-select">
             <mat-label>Language</mat-label>
-            <mat-select [(ngModel)]="selectedLanguage">
+            <!-- One-way ngModel + explicit event: language changes are written through so the
+                 per-question draft store keeps (language, code) pairs consistent on navigation. -->
+            <mat-select [ngModel]="selectedLanguage" (ngModelChange)="onLanguageSelected($event)">
               @for (lang of languages; track lang.id) {
                 <mat-option [value]="lang.name">{{ lang.name }}</mat-option>
               }
@@ -53,7 +55,9 @@ import { HighlightBlockComponent } from '../../shared/components/highlight-block
 
           <mat-form-field appearance="fill" class="full-width code-area">
             <mat-label>Your Code</mat-label>
-            <textarea matInput rows="12" [(ngModel)]="codeAnswer"></textarea>
+            <!-- One-way ngModel + explicit event: every keystroke is written through to the
+                 parent's per-question draft store so navigating away and back restores text. -->
+            <textarea matInput rows="12" [ngModel]="codeAnswer" (ngModelChange)="onCodeTyped($event)"></textarea>
           </mat-form-field>
         </mat-card-content>
       </mat-card>
@@ -76,14 +80,60 @@ import { HighlightBlockComponent } from '../../shared/components/highlight-block
     }
   `]
 })
-export class CodingQuestionComponent {
+/**
+ * Controlled editor for coding questions.
+ *
+ * `codeAnswer`/`selectedLanguage` are re-seeded from `initialSubmission` whenever the bound
+ * question changes id (ngOnChanges guard below), so prev/next navigation always restores this
+ * question's own draft/persisted submission. Typed keystrokes and language picks are emitted
+ * upward so the parent keeps a per-question draft store in sync.
+ */
+export class CodingQuestionComponent implements OnChanges {
   @Input() question: any | null = null;
   @Input() index: number = 0;
   @Input() total: number = 0;
 
+  /** Seed submission for the currently bound question (draft or persisted). */
+  @Input() initialSubmission: { language?: string; code?: string } | null = null;
+
+  @Output() submissionChange = new EventEmitter<{ language: string; code: string }>();
+
   languages: LanguageOption[] = [];
   selectedLanguage = 'Java';
   codeAnswer = '';
+  private boundQuestionId: number | null = null;
+
+  ngOnChanges(changes: SimpleChanges): void {
+    const q = this.question as any;
+    if (!q || q.id === undefined || q.id === null) return;
+    // Re-seed only when the question itself switches — unrelated parent re-renders
+    // (snackbars, isSubmitting flips…) must never clobber code the user is typing.
+    if (this.boundQuestionId !== q.id) {
+      this.boundQuestionId = q.id;
+      // Angular sets @Input values on the instance before ngOnChanges runs, so
+      // reading `this` here always reflects the new question's seed.
+      const sub = this.initialSubmission;
+      this.codeAnswer = sub?.code ?? '';
+      if (sub?.language) {
+        this.selectedLanguage = sub.language;
+      }
+    }
+  }
+
+  onCodeTyped(value: string | null): void {
+    const code = value ?? '';
+    this.codeAnswer = code;
+    this.emitSubmission();
+  }
+
+  onLanguageSelected(lang: string | null): void {
+    this.selectedLanguage = lang || 'Java';
+    this.emitSubmission();
+  }
+
+  private emitSubmission(): void {
+    this.submissionChange.emit({ language: this.currentLanguage, code: this.codeAnswer });
+  }
 
   get currentCode(): string { return this.codeAnswer || ''; }
   get currentLanguage(): string { return this.selectedLanguage; }
@@ -112,7 +162,10 @@ export class CodingQuestionComponent {
     } catch { /* fallback — do nothing */ }
   }
 
+  /** Clear must write through too — otherwise navigating away and back would
+       * resurrect the old text from the per-question draft store. */
   clearCode(): void {
     this.codeAnswer = '';
+    this.emitSubmission();
   }
 }

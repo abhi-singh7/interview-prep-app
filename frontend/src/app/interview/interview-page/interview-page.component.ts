@@ -1,4 +1,4 @@
-import { Component, OnInit, ViewChild, ChangeDetectorRef } from '@angular/core';
+import { Component, OnInit, ViewChild } from '@angular/core';
 import { ActivatedRoute } from '@angular/router';
 import { CommonModule } from '@angular/common';
 import { Router, RouterModule } from '@angular/router';
@@ -14,7 +14,6 @@ import { TheoryQuestionComponent } from '../components/theory-question.component
 import { CodingQuestionComponent } from '../components/coding-question.component';
 import { InterviewSetupComponent } from '../setup-page/interview-setup.component';
 import { QuestionTypeBadgeComponent } from '../../shared/badges/question-type-badge.component';
-import { ViewRestorerService } from '../../shared/services/view-restorer.service';
 import { KeyboardShortcutsDirective } from '../../shared/directives/keyboard-shortcuts.directive';
 
 @Component({
@@ -43,7 +42,7 @@ import { KeyboardShortcutsDirective } from '../../shared/directives/keyboard-sho
       <!-- Main content -->
       <ng-template #mainContent>
         <!-- No questions loaded yet — show message to start an interview -->
-        <ng-container *ngIf="questionsLoading || (currentQuestions.length === 0 && !questionsLoadError)">
+        <ng-container *ngIf="questionsLoading || (currentQuestions.length === 0 && !questionsLoadError); else errorState">
           <mat-card>
             <mat-card-header><mat-card-title>No Active Session</mat-card-title></mat-card-header>
             <mat-card-content>
@@ -66,6 +65,13 @@ import { KeyboardShortcutsDirective } from '../../shared/directives/keyboard-sho
           </ng-container>
         </ng-template>
 
+        <!-- Evaluating state: shown while the final answer is being submitted / the interview is finishing.
+             Without this view, showEvaluating=true rendered nothing at all (blank page). -->
+        <div class="evaluating" *ngIf="showEvaluating && currentQuestions.length > 0">
+          <mat-spinner diameter="64"></mat-spinner>
+          <p>Finishing your interview…</p>
+        </div>
+
         <!-- Active interview with questions -->
         <ng-container *ngIf="!showEvaluating && currentQuestions.length > 0">
 
@@ -75,13 +81,18 @@ import { KeyboardShortcutsDirective } from '../../shared/directives/keyboard-sho
             <mat-progress-bar mode="determinate" [value]="(currentIndex / currentQuestions.length) * 100" class="progress-bar"></mat-progress-bar>
           </div>
 
-          <!-- Question display area -->
+          <!-- Question display area.
+               Each editor is seeded from the per-question store (initialAnswer/initialSubmission)
+               and writes every keystroke back through its Change events, so navigating between
+               questions always restores that question's own text — no manual restore needed. -->
           <ng-container *ngIf="!showEvaluating">
             <app-theory-question
               #theoryQuestion
               [question]="currentQuestion"
               [index]="currentIndex + 1"
               [total]="currentQuestions.length"
+              [initialAnswer]="storedTextFor(currentQuestion)"
+              (answerChange)="onTheoryDraft($event)"
               *ngIf="currentQuestion?.type === 'THEORY'">
             </app-theory-question>
 
@@ -90,6 +101,8 @@ import { KeyboardShortcutsDirective } from '../../shared/directives/keyboard-sho
               [question]="currentQuestion"
               [index]="currentIndex + 1"
               [total]="currentQuestions.length"
+              [initialSubmission]="storedSubmissionFor(currentQuestion)"
+              (submissionChange)="onCodingDraft($event)"
               *ngIf="currentQuestion?.type === 'CODE'">
             </app-coding-question>
           </ng-container>
@@ -168,8 +181,6 @@ export class InterviewPageComponent implements OnInit {
     private router: Router,
     private snackBar: MatSnackBar,
     private route: ActivatedRoute,
-    private cdr: ChangeDetectorRef,
-    private viewRestorer: ViewRestorerService,
   ) {}
 
   ngOnInit(): void {
@@ -194,40 +205,83 @@ export class InterviewPageComponent implements OnInit {
 
   private loadCurrentQuestions(sessionId: number): void {
     if (sessionId !== null) {
+      // New tab / cleared sessionStorage — make sure the service tracks this session, otherwise
+      // submitAnswer() silently no-ops and answers never reach the backend.
+      if (this.interviewService.currentSessionId() === null) {
+        this.interviewService.currentSessionId.set(sessionId);
+      }
       this.questionsLoading = true;
       this.questionsLoadError = false;
       this.interviewService.getQuestionsForSession(sessionId).subscribe({
-        next: (questions: any[]) => {
-          this.currentQuestions = questions;
-          this.questionsLoading = false;
+        next: (questions: any[] | null) => {
+          // Backend returns 204 No Content when the session has no questions — Angular emits `null`.
+          this.currentQuestions = Array.isArray(questions) ? questions : [];
 
-          // Restore the answer for the current question from stored data using ViewRestorerService
-          const currentQ = this.currentQuestion;
-          if (currentQ) {
-            if (currentQ.type === 'THEORY') {
-              const storedAnswer = this.interviewService.getStoredAnswer(currentQ.id);
-              if (storedAnswer !== undefined) {
-                this.viewRestorer.applyAndRefresh(this.theoryQuestionComponent, this.cdr, c => {
-                  (c as TheoryQuestionComponent).answerText = storedAnswer;
-                });
+          // Load server-persisted answers so resume/refresh restores already-submitted text.
+          this.interviewService.getAnswersForSession(sessionId).subscribe({
+            next: (answers: any[]) => {
+              const list = Array.isArray(answers) ? answers : [];
+              for (const a of list) {
+                const q = this.currentQuestions.find((qq: any) => qq.id === a.questionId);
+                if (!q) continue;
+                if (q.type === 'CODE') {
+                  this.interviewService.storeCodingSubmission(a.questionId, a.languageSubmitted || 'javascript', a.answerText);
+                } else {
+                  this.interviewService.storeAnswer(a.questionId, a.answerText);
+                }
               }
-            } else if (currentQ.type === 'CODE') {
-              const storedSubmission = this.interviewService.getStoredCodingSubmission(currentQ.id);
-              if (storedSubmission !== undefined) {
-                this.viewRestorer.applyAndRefresh(this.codingQuestionComponent, this.cdr, c => {
-                  (c as CodingQuestionComponent).codeAnswer = storedSubmission.code;
-                });
-              }
+              this.finishLoadingQuestions();
+            },
+            error: () => {
+              // Answers endpoint unavailable — degrade gracefully; still show the session.
+              this.finishLoadingQuestions();
             }
-          }
+          });
         },
         error: (err: any) => {
           this.questionsLoading = false;
           this.questionsLoadError = true;
+          // 400 means the backend says the session no longer exists / is not active.
+          // Drop the stale id so the navbar stops linking to a dead session and falls back to setup.
+          if (err?.status === 400) {
+            this.interviewService.clearCurrentSession();
+          }
         }
       });
     } else {
       this.questionsLoading = false;
+    }
+  }
+
+  private finishLoadingQuestions(): void {
+    this.questionsLoading = false;
+    // No manual restore needed: the question editors that render now seed themselves from
+    // the per-question store on creation (initialAnswer/initialSubmission inputs).
+  }
+
+  /** Seed text for the editor currently rendered — draft or persisted, keyed by question id. */
+  storedTextFor(question: any): string {
+    return question ? (this.interviewService.getStoredAnswer(question.id) ?? '') : '';
+  }
+
+  /** Seed submission (language + code) for coding questions; null when none stored yet. */
+  storedSubmissionFor(question: any): { language?: string; code?: string } | null {
+    if (!question || question.type !== 'CODE') return null;
+    const sub = this.interviewService.getStoredCodingSubmission(question.id);
+    return sub ? { language: sub.language, code: sub.code } : null;
+  }
+
+  /** Write-through from the theory editor: every keystroke updates the per-question store. */
+  onTheoryDraft(text: string): void {
+    if (this.currentQuestion) {
+      this.interviewService.storeAnswer(this.currentQuestion.id, text);
+    }
+  }
+
+  /** Write-through from the coding editor: keeps (language, code) pairs in sync per question. */
+  onCodingDraft(submission: { language: string; code: string }): void {
+    if (this.currentQuestion) {
+      this.interviewService.storeCodingSubmission(this.currentQuestion.id, submission.language, submission.code);
     }
   }
 
@@ -244,7 +298,13 @@ export class InterviewPageComponent implements OnInit {
 
   submitAnswer(): void {
     const sessionId = this.interviewService.currentSessionId();
-    if (sessionId === null || !this.currentQuestion) return;
+    // Previously a silent no-op — left the user stuck with zero answers stored (sessions 98/99).
+    if (!this.currentQuestion || sessionId === null) {
+      if (sessionId === null && this.currentQuestion) {
+        this.snackBar.open('No active interview session in progress — reload the interview page', 'Close', { duration: 6000 });
+      }
+      return;
+    }
 
     let answerText = '';
     if (this.currentQuestion.type === 'THEORY') {
@@ -267,13 +327,20 @@ export class InterviewPageComponent implements OnInit {
         answerText
       ).subscribe({
         next: () => {
-          this.viewRestorer.applyAndRefresh(this.codingQuestionComponent, this.cdr, c => {
-            (c as CodingQuestionComponent).codeAnswer = '';
-          });
+          // No field clearing needed: the editor for the next question seeds itself from
+          // the per-question store (initialSubmission input) when navigation runs CD.
           this.isSubmitting = false;
           this.moveNext();
         },
         error: (err: any) => {
+          // FIX-19: 409 means this question already has an answer on the server
+          // (e.g. resumed session, or navigating back to one). There is no update API,
+          // so re-submitting is meaningless — just advance instead of erroring out.
+          if (err?.status === 409) {
+            this.isSubmitting = false;
+            this.moveNext();
+            return;
+          }
           const msg = err.error?.error || 'Failed to submit answer';
           this.snackBar.open(msg, 'Close', { duration: 5000 });
           this.isSubmitting = false;
@@ -284,13 +351,20 @@ export class InterviewPageComponent implements OnInit {
       this.interviewService.storeAnswer(this.currentQuestion.id, answerText);
       this.interviewService.submitAnswer(this.currentQuestion.id, answerText).subscribe({
         next: () => {
-          this.viewRestorer.applyAndRefresh(this.theoryQuestionComponent, this.cdr, c => {
-            (c as TheoryQuestionComponent).answerText = '';
-          });
+          // No field clearing needed: the editor for the next question seeds itself from
+          // the per-question store (initialAnswer input) when navigation runs CD.
           this.isSubmitting = false;
           this.moveNext();
         },
         error: (err: any) => {
+          // FIX-19: 409 means this question already has an answer on the server
+          // (e.g. resumed session, or navigating back to one). There is no update API,
+          // so re-submitting is meaningless — just advance instead of erroring out.
+          if (err?.status === 409) {
+            this.isSubmitting = false;
+            this.moveNext();
+            return;
+          }
           const msg = err.error?.error || 'Failed to submit answer';
           this.snackBar.open(msg, 'Close', { duration: 5000 });
           this.isSubmitting = false;
@@ -313,57 +387,19 @@ export class InterviewPageComponent implements OnInit {
     }
   }
 
+  /** Navigate back one question. The editor re-seeds itself from the per-question store when
+   *  its bound question changes, so no manual restore is needed here — and none was reliable:
+   *  @ViewChild refs are stale until change detection runs after this handler returns. */
   prevQuestion(): void {
     if (this.currentIndex > 0) {
-      const prevIndex = this.currentIndex - 1;
-      const prevQ = this.currentQuestions[prevIndex];
-      this.currentIndex = prevIndex;
-
-      // Restore the previous question's answer using ViewRestorerService
-      if (prevQ?.type === 'THEORY') {
-        const storedAnswer = this.interviewService.getStoredAnswer(prevQ.id);
-        if (storedAnswer !== undefined) {
-          this.viewRestorer.applyAndRefresh(this.theoryQuestionComponent, this.cdr, c => {
-            (c as TheoryQuestionComponent).answerText = storedAnswer;
-          });
-        }
-      } else if (prevQ?.type === 'CODE') {
-        const storedSubmission = this.interviewService.getStoredCodingSubmission(prevQ.id);
-        if (storedSubmission !== undefined) {
-          this.viewRestorer.applyAndRefresh(this.codingQuestionComponent, this.cdr, c => {
-            (c as CodingQuestionComponent).codeAnswer = storedSubmission.code;
-          });
-        }
-      }
+      this.currentIndex--;
     }
   }
 
+  /** Skip the current question without submitting it. Draft text typed so far stays safe:
+   *  every keystroke is written through to the per-question store, and editors re-seed from
+   *  that store when navigation brings a question back into view. */
   skipQuestion(): void {
-    const sessionId = this.interviewService.currentSessionId();
-    if (sessionId !== null && this.currentQuestion) {
-      let answerText = '';
-      let language: string | undefined;
-      if (this.currentQuestion.type === 'THEORY') {
-        answerText = this.theoryQuestionComponent?.currentAnswer || '';
-      } else if (this.currentQuestion.type === 'CODE') {
-        language = this.codingQuestionComponent?.currentLanguage || 'Java';
-        answerText = this.codingQuestionComponent?.codeAnswer || '';
-      }
-
-      if (answerText.trim()) {
-        if (this.currentQuestion.type === 'THEORY') {
-          this.interviewService.storeAnswer(this.currentQuestion.id, answerText);
-          this.viewRestorer.applyAndRefresh(this.theoryQuestionComponent, this.cdr, c => {
-            (c as TheoryQuestionComponent).answerText = '';
-          });
-        } else if (this.currentQuestion.type === 'CODE') {
-          this.interviewService.storeCodingSubmission(this.currentQuestion.id, language!, answerText);
-          this.viewRestorer.applyAndRefresh(this.codingQuestionComponent, this.cdr, c => {
-            (c as CodingQuestionComponent).codeAnswer = '';
-          });
-        }
-      }
-    }
     this.moveNext();
   }
 
@@ -371,24 +407,38 @@ export class InterviewPageComponent implements OnInit {
     const sessionId = this.interviewService.currentSessionId();
     if (sessionId === null) return;
 
-    // Show spinner immediately so the user knows something is happening —
-    // even before any HTTP call completes.
-    this.showEvaluating = true;
-
+    // Capture the typed answer synchronously. Flipping showEvaluating below destroys the question
+    // components on the next CD cycle, after which the @ViewChild refs are undefined — never read
+    // them in async callbacks.
     let answerText = '';
     if (this.currentQuestion.type === 'THEORY') {
       answerText = this.theoryQuestionComponent?.currentAnswer || '';
     } else if (this.currentQuestion.type === 'CODE') {
       answerText = this.codingQuestionComponent?.codeAnswer || '';
     }
+    const language = this.currentQuestion.type === 'CODE' ? (this.codingQuestionComponent?.currentLanguage || 'Java') : undefined;
 
-    const finishAndNavigate = (): void => {
-      this.interviewService.clearCurrentSession();
-      this.router.navigate(['/results', sessionId]);
-    };
+    // Show the evaluating view immediately so the user knows something is happening —
+    // even before any HTTP call completes.
+    this.showEvaluating = true;
 
     if (answerText.trim()) {
-      const language = this.currentQuestion.type === 'CODE' ? (this.codingQuestionComponent?.currentLanguage || 'Java') : undefined;
+      // Persist the last answer first, then finish & navigate. The question components are destroyed
+      // by the time these callbacks run, so clearing their fields here is impossible AND pointless —
+      // we navigate away right after finishing.
+      const onSuccess = (): void => this.startFinish(sessionId);
+      const onError = (err: any): void => {
+        // 409 means this answer already exists server-side (e.g., re-finishing a session whose last
+        // answer was persisted by an earlier, partially-completed run). Nothing left to submit —
+        // proceed straight to finish.
+        if (err?.status === 409) {
+          this.startFinish(sessionId);
+          return;
+        }
+        const msg = err.error?.error || 'Failed to submit answer';
+        this.snackBar.open(msg, 'Close', { duration: 5000 });
+        this.showEvaluating = false;
+      };
 
       if (language) {
         // Coding path: submit coding answer, then finish & navigate.
@@ -397,72 +447,34 @@ export class InterviewPageComponent implements OnInit {
           this.currentQuestion.id,
           language,
           answerText
-        ).subscribe({
-          next: () => {
-            // Reset coding answer field before finishing.
-            this.viewRestorer.applyAndRefresh(this.codingQuestionComponent, this.cdr, c => {
-              (c as CodingQuestionComponent).codeAnswer = '';
-            });
-
-            // Start the finish call and guard against hangs with a timeout.
-            const finishSub = this.interviewService.finishInterview(sessionId).subscribe({
-              next: () => { finishAndNavigate(); },
-              error: (err: any) => this.handleFinishError(err),
-            });
-            setTimeout(() => {
-              if (!finishSub.closed && !this.router.url.startsWith('/results')) {
-                // finishInterview hung — force-navigate to results so the spinner doesn't stay forever.
-                finishSub.unsubscribe();
-                void this.router.navigate(['/results', sessionId]).catch(() => {});
-              }
-            }, 30_000);
-          },
-          error: (err: any) => {
-            const msg = err.error?.error || 'Failed to submit answer';
-            this.snackBar.open(msg, 'Close', { duration: 5000 });
-            this.showEvaluating = false;
-          }
-        });
+        ).subscribe({ next: onSuccess, error: onError });
       } else {
         // Theory path: submit answer, then finish & navigate.
         this.interviewService.storeAnswer(this.currentQuestion.id, answerText);
-        this.interviewService.submitAnswer(this.currentQuestion.id, answerText).subscribe({
-          next: () => {
-            this.viewRestorer.applyAndRefresh(this.theoryQuestionComponent, this.cdr, c => {
-              (c as TheoryQuestionComponent).answerText = '';
-            });
-
-            const finishSub = this.interviewService.finishInterview(sessionId).subscribe({
-              next: () => { finishAndNavigate(); },
-              error: (err: any) => this.handleFinishError(err),
-            });
-            setTimeout(() => {
-              if (!finishSub.closed && !this.router.url.startsWith('/results')) {
-                finishSub.unsubscribe();
-                void this.router.navigate(['/results', sessionId]).catch(() => {});
-              }
-            }, 30_000);
-          },
-          error: (err: any) => {
-            const msg = err.error?.error || 'Failed to submit answer';
-            this.snackBar.open(msg, 'Close', { duration: 5000 });
-            this.showEvaluating = false;
-          }
-        });
+        this.interviewService.submitAnswer(this.currentQuestion.id, answerText).subscribe({ next: onSuccess, error: onError });
       }
     } else {
       // No answer — just finish the interview.
-      const finishSub = this.interviewService.finishInterview(sessionId).subscribe({
-        next: () => { finishAndNavigate(); },
-        error: (err: any) => this.handleFinishError(err),
-      });
-      setTimeout(() => {
-        if (!finishSub.closed && !this.router.url.startsWith('/results')) {
-          finishSub.unsubscribe();
-          void this.router.navigate(['/results', sessionId]).catch(() => {});
-        }
-      }, 30_000);
+      this.startFinish(sessionId);
     }
+  }
+
+  /** POST /finish + navigate to results, with a timeout guard that force-navigates if the call hangs. */
+  private startFinish(sessionId: number): void {
+    const finishSub = this.interviewService.finishInterview(sessionId).subscribe({
+      next: () => {
+        this.interviewService.clearCurrentSession();
+        this.router.navigate(['/results', sessionId]);
+      },
+      error: (err: any) => this.handleFinishError(err),
+    });
+    setTimeout(() => {
+      if (!finishSub.closed && !this.router.url.startsWith('/results')) {
+        // finishInterview hung — force-navigate to results so the spinner doesn't stay forever.
+        finishSub.unsubscribe();
+        void this.router.navigate(['/results', sessionId]).catch(() => {});
+      }
+    }, 30_000);
   }
 
   private handleFinishError(err: any): void {
@@ -474,7 +486,8 @@ export class InterviewPageComponent implements OnInit {
 
 
   retryLoadQuestions(): void {
-    const sessionId = this.interviewService.currentSessionId();
+    // Prefer the session from the URL — sessionStorage may hold a different/stale id.
+    const sessionId = this.routeSessionId ?? this.interviewService.currentSessionId();
     if (sessionId !== null) {
       this.questionsLoadError = false;
       this.loadCurrentQuestions(sessionId);

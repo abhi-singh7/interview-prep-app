@@ -36,6 +36,7 @@ public class InterviewController {
     private final AuthenticationContext authContext;
     private final TopicAutoSelectionService topicAutoSelectionService;
     private final CategoryRepository categoryRepository;
+    private final InterviewEvaluationService interviewEvaluationService;
 
     // FIX-16: reuse a single JsonMapper instance instead of building one per loop iteration
     private final JsonMapper jsonMapper = JsonMapper.builder().build();
@@ -46,7 +47,7 @@ public class InterviewController {
                                InterviewSessionRepository sessionRepository, QuestionRepository questionRepository,
                                AnswerRepository answerRepository, EvaluationRepository evaluationRepository,
                                AuthenticationContext authContext, TopicAutoSelectionService topicAutoSelectionService,
-                               CategoryRepository categoryRepository) {
+                               CategoryRepository categoryRepository, InterviewEvaluationService interviewEvaluationService) {
         this.entityManager = entityManager;
         this.aiGatewayService = aiGatewayService;
         this.embeddingService = embeddingService;
@@ -57,6 +58,30 @@ public class InterviewController {
         this.authContext = authContext;
         this.topicAutoSelectionService = topicAutoSelectionService;
         this.categoryRepository = categoryRepository;
+        this.interviewEvaluationService = interviewEvaluationService;
+    }
+
+    // FIX-18: defensively map AI-provided question types to the enum. The model sometimes returns
+    // free-form values (e.g. "THEORY_ONLY (conceptual focus)") that QuestionType.valueOf() rejects,
+    // which crashed startInterview and orphaned the session. Treat anything mentioning CODE/CODING as
+    // CODE; default every other non-blank value to THEORY so generation never throws mid-session.
+    private static QuestionType parseQuestionType(String raw) {
+        if (raw == null || raw.isBlank()) {
+            return null;
+        }
+        String t = raw.trim().toUpperCase();
+        switch (t) {
+            case "THEORY":
+                return QuestionType.THEORY;
+            case "CODE":
+                return QuestionType.CODE;
+        }
+        if (t.contains("CODE") || t.contains("CODING")) {
+            logger.warn("AI returned non-standard question type, mapping to CODE: {}", raw);
+            return QuestionType.CODE;
+        }
+        logger.warn("AI returned non-standard question type, defaulting to THEORY: {}", raw);
+        return QuestionType.THEORY;
     }
 
     @PostMapping("/start")
@@ -114,7 +139,7 @@ public class InterviewController {
         for (var record : questionRecords) {
             Question q = new Question();
             q.setSession(session);
-            q.setType(record.type() != null ? QuestionType.valueOf(record.type()) : null);
+            q.setType(parseQuestionType(record.type()));
             // Use topic names from the record if available, resolve to IDs for categoryId storage
             if (record.topics() != null && !record.topics().isEmpty()) {
                 q.setCategoryId(resolveTopicNamesToIds(record.topics()));
@@ -125,6 +150,9 @@ public class InterviewController {
             if (record.title() != null) q.setTitle(record.title());
             if (record.description() != null) q.setDescription(record.description());
             if (record.codePrompt() != null) q.setCodePrompt(record.codePrompt());
+            if (record.referenceAnswer() != null && !record.referenceAnswer().isBlank()) {
+                q.setReferenceAnswer(record.referenceAnswer().trim());
+            }
             
             // Generate vector embedding for the question text (Hibernate 7 native VECTOR type)
             String textToEmbed = record.questionText();
@@ -333,7 +361,7 @@ public class InterviewController {
     }
 
     @PostMapping("/finish")
-    public ResponseEntity<ResultsResponse> finishInterview(
+    public ResponseEntity<?> finishInterview(
             @RequestBody InterviewFinishRequest request) {
 
         Long userId = authContext.getCurrentUserId();
@@ -351,95 +379,43 @@ public class InterviewController {
         session.setEndedAt(java.time.LocalDateTime.now());
         sessionRepository.save(session);
 
-        // Batch evaluate all answers and persist evaluations
-        java.util.List<Answer> answers = answerRepository.findBySessionId(session.getId());
-        double totalScore = 0;
-        int evaluatedCount = 0;
-        java.util.List<EvaluationDetail> evaluations = new java.util.ArrayList<>();
-
-        for (Answer answer : answers) {
-            try {
-                Evaluation evaluation;
-                if (answer.getQuestion().getType() == QuestionType.CODE) {
-                    evaluation = aiGatewayService.evaluateCodingAnswer(answer.getQuestion(), answer);
-                } else {
-                    evaluation = aiGatewayService.evaluateTheoryAnswer(answer.getQuestion(), answer);
-                }
-
-                // Persist evaluation to database so results survive page reloads
-                evaluationRepository.save(evaluation);
-
-                // Parse strengths and weaknesses from JSONB strings into lists (FIX-16: shared mapper)
-                ArrayNode strengthsArray = (ArrayNode) jsonMapper.readTree(evaluation.getStrengthsJson());
-                ArrayNode weaknessesArray = (ArrayNode) jsonMapper.readTree(evaluation.getWeaknessesJson());
-
-                EvaluationDetail detail = new EvaluationDetail();
-                detail.setEvaluationId(evaluation.getId());
-                detail.setQuestionType(answer.getQuestion().getType());
-                detail.setQuestionText(answer.getQuestion().getQuestionText());
-                detail.setScore(evaluation.getScore());
-                detail.setStatus(evaluation.getStatus());
-                detail.setIsCorrect(evaluation.getIsCorrect());
-                detail.setCorrectnessExplanation(evaluation.getCorrectnessExplanation());
-                detail.setTimeComplexity(evaluation.getTimeComplexity());
-                detail.setSpaceComplexity(evaluation.getSpaceComplexity());
-
-                // Convert JSONB arrays to lists
-                java.util.List<String> strengths = new java.util.ArrayList<>();
-                for (JsonNode sn : strengthsArray) {
-                    strengths.add(sn.asText());
-                }
-                detail.setStrengths(strengths);
-
-                java.util.List<String> weaknesses = new java.util.ArrayList<>();
-                for (JsonNode wn : weaknessesArray) {
-                    weaknesses.add(wn.asText());
-                }
-                detail.setWeaknesses(weaknesses);
-
-                detail.setImprovedAnswer(evaluation.getImprovedAnswer());
-                detail.setUserAnswerText(answer.getAnswerText());
-                if (answer.getQuestion().getType() == QuestionType.CODE) {
-                    detail.setSubmittedCode(answer.getAnswerText()); // Code is also in answerText for coding questions
-                }
-
-                // FIX-16: memoize resolved topic names per categoryId to avoid N+1 category lookups
-                detail.setTopicNames(topicNamesCache.computeIfAbsent(
-                        answer.getQuestion().getCategoryId(), this::resolveTopicNamesFromCategoryId));
-
-                evaluations.add(detail);
-                totalScore += evaluation.getScore();
-                evaluatedCount++;
-
-            } catch (Exception e) {
-                logger.error("Evaluation failed for answerId={}: {}", answer.getId(), e.getMessage());
-
-                // Persist a FAILED evaluation so it survives page refreshes and retry is reachable
-                Evaluation failedEvaluation = new Evaluation();
-                failedEvaluation.setAnswer(answer);
-                failedEvaluation.setStatus(EvaluationStatus.FAILED);
-                evaluationRepository.save(failedEvaluation);
-
-                EvaluationDetail failedEval = new EvaluationDetail();
-                failedEval.setEvaluationId(failedEvaluation.getId());
-                failedEval.setAnswerId(answer.getId());
-                failedEval.setQuestionType(answer.getQuestion().getType());
-                failedEval.setQuestionText(answer.getQuestion().getQuestionText());
-                failedEval.setStatus(EvaluationStatus.FAILED);
-                evaluations.add(failedEval);
-            }
+        // Visibility guard: sessions 98/99 completed with zero stored answers and the gap was invisible.
+        long totalQuestions = questionRepository.countBySessionId(session.getId());
+        long submittedAnswers = answerRepository.findBySessionId(session.getId()).size();
+        if (submittedAnswers < totalQuestions) {
+            logger.warn("Session {} completed with only {}/{} answers submitted — unanswered questions get no evaluation",
+                    session.getId(), submittedAnswers, totalQuestions);
         }
 
-        // Calculate overall score as weighted average
-        double overallScore = evaluatedCount > 0 ? totalScore / evaluatedCount : 0;
+        // Kick off evaluation on a background thread and return immediately so the frontend can
+        // navigate to /results and poll GET /results until every answer has an evaluation.
+        interviewEvaluationService.evaluateSession(session.getId());
 
-        ResultsResponse response = new ResultsResponse();
-        response.setSessionId(session.getId());
-        response.setStatus(SessionStatus.COMPLETED);
-        response.setOverallScore(Math.round(overallScore * 100.0) / 100.0); // Round to 2 decimal places
-        response.setEvaluations(evaluations);
+        Map<String, Object> body = new HashMap<>();
+        body.put("sessionId", session.getId());
+        body.put("status", "EVALUATING");
+        return ResponseEntity.accepted().body(body);
+    }
 
-        return ResponseEntity.ok(response);
+    // Return the already-submitted answers for a session so the frontend can restore them on
+    // resume/refresh (the in-memory answer maps are lost across page loads).
+    @GetMapping("/session/{sessionId}/answers")
+    public ResponseEntity<?> getAnswersForSession(@PathVariable Long sessionId) {
+        Long userId = authContext.getCurrentUserId();
+        InterviewSession session = sessionRepository.findById(sessionId).orElse(null);
+        if (session == null || !session.getUser().getId().equals(userId)) {
+            return ResponseEntity.status(403).body(null);
+        }
+
+        List<Map<String, Object>> out = new ArrayList<>();
+        for (Answer a : answerRepository.findBySessionId(sessionId)) {
+            Map<String, Object> m = new HashMap<>();
+            m.put("questionId", a.getQuestion().getId());
+            m.put("answerText", a.getAnswerText());
+            m.put("languageSubmitted", a.getLanguageSubmitted());
+            out.add(m);
+        }
+        return ResponseEntity.ok(out);
     }
 
     @GetMapping("/results/{sessionId}")
@@ -455,6 +431,11 @@ public class InterviewController {
         SessionStatus status = session.getStatus();
 
         try {
+            if (status == SessionStatus.COMPLETED) {
+                // One-time backfill so legacy sessions still show correct answers in review
+                ensureReferenceAnswers(session);
+            }
+
             // Find all evaluations for this session's questions
             java.util.List<Evaluation> evaluationsList = evaluationRepository.findByAnswerSessionIdOrderByScoreDesc(session.getId());
 
@@ -526,11 +507,104 @@ public class InterviewController {
             response.setStatus(status);
             response.setOverallScore(Math.round(overallScore * 100.0) / 100.0);
             response.setEvaluations(evaluations);
+            response.setQuestions(buildQuestionReviews(session));
 
             return ResponseEntity.ok(response);
 
         } catch (Exception e) {
             return ResponseEntity.internalServerError().body(Map.of("error", "Failed to fetch results"));
+        }
+    }
+
+    // Generate + persist a reference answer for any question still missing one (legacy sessions).
+    // Questions that already carry one are skipped, so repeat calls become no-ops.
+    private void ensureReferenceAnswers(InterviewSession session) {
+        List<Question> qs = questionRepository.findBySessionId(session.getId());
+        for (Question q : qs) {
+            if (q.getReferenceAnswer() != null && !q.getReferenceAnswer().isBlank()) continue;
+            try {
+                String ref = aiGatewayService.generateReferenceAnswer(q);
+                if (ref != null && !ref.isBlank()) {
+                    q.setReferenceAnswer(ref.trim());
+                    questionRepository.save(q);
+                }
+            } catch (Exception e) {
+                logger.warn("Failed to generate reference answer for question {}: {}", q.getId(), e.getMessage());
+            }
+        }
+    }
+
+    // Build the per-question review list: every session question with the user's submitted
+    // answer (or null when skipped) plus the stored reference (correct) answer, so unanswered
+    // and wrongly answered questions remain reviewable after finishing.
+    private List<QuestionReviewDetail> buildQuestionReviews(InterviewSession session) {
+        Map<Long, Answer> answersByQuestion = new HashMap<>();
+        for (Answer a : answerRepository.findBySessionId(session.getId())) {
+            if (a != null && a.getQuestion() != null) {
+                answersByQuestion.put(a.getQuestion().getId(), a);
+            }
+        }
+
+        Map<Long, Evaluation> evalsByAnswer = new HashMap<>();
+        for (Evaluation e : evaluationRepository.findByAnswerSessionIdOrderByScoreDesc(session.getId())) {
+            if (e != null && e.getAnswer() != null) {
+                evalsByAnswer.put(e.getAnswer().getId(), e);
+            }
+        }
+
+        List<QuestionReviewDetail> reviews = new ArrayList<>();
+        for (Question q : questionRepository.findBySessionId(session.getId())) {
+            QuestionReviewDetail r = new QuestionReviewDetail();
+            r.setQuestionId(q.getId());
+            r.setQuestionType(q.getType());
+            r.setQuestionText(q.getQuestionText());
+            if (q.getTitle() != null) r.setTitle(q.getTitle());
+            if (q.getDescription() != null) r.setDescription(q.getDescription());
+            if (q.getCodePrompt() != null) r.setCodePrompt(q.getCodePrompt());
+            r.setReferenceAnswer(q.getReferenceAnswer());
+
+            Answer a = answersByQuestion.get(q.getId());
+            if (a != null) {
+                r.setUserAnswerText(a.getAnswerText());
+                if (a.getLanguageSubmitted() != null) r.setLanguage(a.getLanguageSubmitted().toLowerCase());
+                if (q.getType() == QuestionType.CODE) r.setSubmittedCode(a.getAnswerText());
+            }
+
+            Evaluation e = a != null ? evalsByAnswer.get(a.getId()) : null;
+            if (e != null) {
+                r.setAnswerId(e.getAnswer().getId());
+                r.setStatus(e.getStatus());
+                if (e.getScore() != null) r.setScore(e.getScore());
+                r.setIsCorrect(e.getIsCorrect());
+                r.setCorrectnessExplanation(e.getCorrectnessExplanation());
+                r.setTimeComplexity(e.getTimeComplexity());
+                r.setSpaceComplexity(e.getSpaceComplexity());
+                r.setImprovedAnswer(e.getImprovedAnswer());
+                if (e.getStatus() == EvaluationStatus.SUCCESS) {
+                    r.setStrengths(readStringArrayOrNull(e.getStrengthsJson()));
+                    r.setWeaknesses(readStringArrayOrNull(e.getWeaknessesJson()));
+                }
+            }
+
+            r.setTopicNames(topicNamesCache.computeIfAbsent(
+                    q.getCategoryId(), this::resolveTopicNamesFromCategoryId));
+
+            reviews.add(r);
+        }
+        return reviews;
+    }
+
+    private List<String> readStringArrayOrNull(String json) {
+        if (json == null) return new ArrayList<>();
+        try {
+            ArrayNode arr = (ArrayNode) jsonMapper.readTree(json);
+            List<String> out = new ArrayList<>();
+            for (JsonNode n : arr) {
+                out.add(n.asText());
+            }
+            return out;
+        } catch (Exception e) {
+            return new ArrayList<>();
         }
     }
 

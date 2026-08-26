@@ -8,6 +8,7 @@ public record QuestionRecord(
     @JsonPropertyDescription("Full question text (required for THEORY questions)") String questionText,
     @JsonPropertyDescription("Short title for coding challenges (present only for CODE questions)") String title,
     @JsonPropertyDescription("Detailed problem description for coding challenges (present only for CODE questions)") String description,
-    @JsonPropertyDescription("Starter code with method signature for coding challenges (present only for CODE questions)") String codePrompt
+    @JsonPropertyDescription("Starter code with method signature for coding challenges (present only for CODE questions)") String codePrompt,
+    @JsonPropertyDescription("Complete model/reference answer: the ideal technically correct answer a strong candidate should give") String referenceAnswer
 ) {
 }

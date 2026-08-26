@@ -1,5 +1,7 @@
 package com.interviewprep.config;
 
+import com.interviewprep.ai.LlmLoggingAdvisor;
+import com.interviewprep.domain.LlmInteractionRepository;
 import tools.jackson.databind.json.JsonMapper;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.model.ChatModel;
@@ -10,20 +12,24 @@ import org.springframework.context.annotation.Configuration;
 public class AiConfig {
 
     @Bean("questionChatClient")
-    ChatClient questionChatClient(ChatModel chatModel) {
+    ChatClient questionChatClient(ChatModel chatModel, LlmInteractionRepository llmInteractionRepository) {
         return ChatClient.builder(chatModel)
                 .defaultSystem("""
                         You are a technical interview question generator. Generate high-quality, varied interview questions across different categories and difficulty levels. Always respond with valid JSON only. Do not include any markdown formatting or text outside the JSON array."""
                 )
+                // Log every LLM request/response to console + llm_interaction_log table (see LlmLoggingAdvisor).
+                .defaultAdvisors(new LlmLoggingAdvisor("question-gen", llmInteractionRepository))
                 .build();
     }
 
     @Bean("evaluationChatClient")
-    ChatClient evaluationChatClient(ChatModel chatModel) {
+    ChatClient evaluationChatClient(ChatModel chatModel, LlmInteractionRepository llmInteractionRepository) {
         return ChatClient.builder(chatModel)
                 .defaultSystem("""
                         You are an AI interviewer evaluating answers. Always evaluate using deterministic results. Provide consistent scoring based on the same criteria. Respond with valid JSON only."""
                 )
+                // Log every LLM request/response to console + llm_interaction_log table (see LlmLoggingAdvisor).
+                .defaultAdvisors(new LlmLoggingAdvisor("evaluation", llmInteractionRepository))
                 .build();
     }
 

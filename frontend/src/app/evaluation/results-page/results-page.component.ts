@@ -34,90 +34,79 @@ import { HighlightBlockComponent } from '../../shared/components/highlight-block
             <mat-card-header><mat-card-title>Your Score</mat-card-title></mat-card-header>
             <mat-card-content>
               <div class="score-display">{{ results.overallScore }}/10</div>
+              <p class="answered-line" *ngIf="results.questions && results.questions.length > 0">
+                {{ answeredCount }} of {{ results.questions.length }} questions answered
+              </p>
             </mat-card-content>
           </mat-card>
 
-          <!-- Per-question evaluations -->
-          <ng-container *ngIf="results.evaluations && results.evaluations.length > 0; else noEvaluations">
-            <ng-container *ngFor="let eval of results.evaluations">
-              <ng-template [ngIf]="eval.status === 'FAILED'">
-                <mat-card class="failed-eval">
-                  <mat-card-header><mat-card-title>Evaluation Failed</mat-card-title></mat-card-header>
-                  <mat-card-content>
-                    <p>{{ eval.questionText }}</p>
-                    <button mat-raised-button color="warn" (click)="retryEvaluation(eval.answerId)">Retry Evaluation</button>
-                  </mat-card-content>
-                </mat-card>
-              </ng-template>
+          <!-- Per-question review: your answer, then the correct answer for every question -->
+          <ng-container *ngIf="results.questions && results.questions.length > 0; else noQuestions">
+            <ng-container *ngFor="let q of results.questions; let qi = index">
+              <mat-card class="result-card" [class.unanswered]="!q.userAnswerText">
+                <mat-card-header>
+                  <mat-card-title>
+                    {{ qi + 1 }}. {{ q.questionType === 'CODE' ? (q.title || 'Coding Question') : 'Theory Question' }}
+                    <span *ngIf="q.status === 'SUCCESS'" class="score-badge">{{ q.score }}/10</span>
+                    <span *ngIf="q.questionType === 'CODE' && q.isCorrect !== null" [class.ok]="!!q.isCorrect"> — {{ q.isCorrect ? 'Correct' : 'Needs Improvement' }}</span>
+                  </mat-card-title>
+                </mat-card-header>
 
-              <!-- Theory question result -->
-              <ng-template [ngIf]="eval.questionType === 'THEORY' && eval.status !== 'FAILED'">
-                <mat-card class="result-card">
-                  <mat-card-header>
-                    <mat-card-title>Question: {{ eval.score }}/10</mat-card-title>
-                  </mat-card-header>
-                  <mat-card-content>
-                    <!-- Topics for this evaluation -->
-                    <ng-container *ngIf="eval.topicNames && eval.topicNames.length > 0">
-                      <h4>Topics:</h4>
-                      <div class="topic-chips">
-                        <span *ngFor="let topic of eval.topicNames" class="topic-chip">{{ topic }}</span>
-                      </div>
-                    </ng-container>
+                <mat-card-content>
+                  <!-- Topics for this question -->
+                  <ng-container *ngIf="q.topicNames && q.topicNames.length > 0">
+                    <h4>Topics:</h4>
+                    <div class="topic-chips">
+                      <span *ngFor="let topic of q.topicNames" class="topic-chip">{{ topic }}</span>
+                    </div>
+                  </ng-container>
 
-                    <h4>Your Answer:</h4>
-                    <p>{{ eval.userAnswerText }}</p>
+                  <!-- Coding problem statement -->
+                  <p *ngIf="q.questionType === 'CODE' && q.description" class="question-desc">{{ q.description }}</p>
 
-                    <h4>Strengths:</h4>
-                    <ul><li *ngFor="let s of eval.strengths">{{ s }}</li></ul>
+                  <h4>Your Answer:</h4>
+                  <ng-container *ngIf="q.questionType === 'CODE'">
+                    <app-highlight-block *ngIf="q.userAnswerText" [code]="q.submittedCode || q.userAnswerText" [lang]="getReviewLanguage(q)"></app-highlight-block>
+                    <p *ngIf="!q.userAnswerText" class="unanswered-note">You did not answer this question.</p>
+                  </ng-container>
+                  <ng-container *ngIf="q.questionType !== 'CODE'">
+                    <pre *ngIf="q.userAnswerText" class="answer-text">{{ q.userAnswerText }}</pre>
+                    <p *ngIf="!q.userAnswerText" class="unanswered-note">You did not answer this question.</p>
+                  </ng-container>
 
-                    <h4>Weaknesses:</h4>
-                    <ul><li *ngFor="let w of eval.weaknesses">{{ w }}</li></ul>
+                  <h4>Correct Answer:</h4>
+                  <pre *ngIf="q.referenceAnswer" class="answer-text correct-answer">{{ q.referenceAnswer }}</pre>
+                  <p *ngIf="!q.referenceAnswer" class="unanswered-note">Reference answer is not available.</p>
 
-                    <h4>Improved Answer:</h4>
-                    <p>{{ eval.improvedAnswer }}</p>
-                  </mat-card-content>
-                </mat-card>
-              </ng-template>
-
-              <!-- Coding question result -->
-              <ng-template [ngIf]="eval.questionType === 'CODE' && eval.status !== 'FAILED'">
-                <mat-card class="result-card">
-                  <mat-card-header>
-                    <mat-card-title>{{ eval.score }}/10 - {{ eval.isCorrect ? 'Correct' : 'Needs Improvement' }}</mat-card-title>
-                  </mat-card-header>
-                  <mat-card-content>
-                    <!-- Topics for this evaluation -->
-                    <ng-container *ngIf="eval.topicNames && eval.topicNames.length > 0">
-                      <h4>Topics:</h4>
-                      <div class="topic-chips">
-                        <span *ngFor="let topic of eval.topicNames" class="topic-chip">{{ topic }}</span>
-                      </div>
-                    </ng-container>
-
-                    <h4>Your Code:</h4>
-                    <app-highlight-block [code]="eval.submittedCode" [lang]="getEvalLanguage(eval)"></app-highlight-block>
-
-                    <p *ngIf="eval.correctnessExplanation"><strong>Correctness:</strong> {{ eval.correctnessExplanation }}</p>
-                    <p><strong>Time Complexity:</strong> {{ eval.timeComplexity || 'N/A' }}</p>
-                    <p><strong>Space Complexity:</strong> {{ eval.spaceComplexity || 'N/A' }}</p>
+                  <!-- Evaluation feedback for answered questions -->
+                  <div *ngIf="q.status === 'SUCCESS'">
+                    <p *ngIf="q.questionType === 'CODE' && q.correctnessExplanation"><strong>Correctness:</strong> {{ q.correctnessExplanation }}</p>
+                    <p *ngIf="q.questionType === 'CODE'"><strong>Time Complexity:</strong> {{ q.timeComplexity || 'N/A' }}</p>
+                    <p *ngIf="q.questionType === 'CODE'"><strong>Space Complexity:</strong> {{ q.spaceComplexity || 'N/A' }}</p>
 
                     <h4>Strengths:</h4>
-                    <ul><li *ngFor="let s of eval.strengths">{{ s }}</li></ul>
+                    <ul><li *ngFor="let s of (q.strengths || [])">{{ s }}</li></ul>
 
                     <h4>Weaknesses:</h4>
-                    <ul><li *ngFor="let w of eval.weaknesses">{{ w }}</li></ul>
+                    <ul><li *ngFor="let w of (q.weaknesses || [])">{{ w }}</li></ul>
 
-                    <h4>Improved Solution:</h4>
-                    <app-highlight-block [code]="eval.improvedAnswer" [lang]="getEvalLanguage(eval)"></app-highlight-block>
-                  </mat-card-content>
-                </mat-card>
-              </ng-template>
+                    <h4>{{ q.questionType === 'CODE' ? 'Improved Solution:' : 'Improved Answer:' }}</h4>
+                    <app-highlight-block *ngIf="q.questionType === 'CODE'" [code]="q.improvedAnswer" [lang]="getReviewLanguage(q)"></app-highlight-block>
+                    <pre *ngIf="q.questionType !== 'CODE'" class="answer-text">{{ q.improvedAnswer }}</pre>
+                  </div>
+
+                  <p *ngIf="q.status === 'FAILED'" class="failed-note">Evaluation failed for this answer.</p>
+                </mat-card-content>
+
+                <mat-card-actions *ngIf="q.status === 'FAILED' && q.answerId">
+                  <button mat-raised-button color="warn" (click)="retryEvaluation(q.answerId)">Retry Evaluation</button>
+                </mat-card-actions>
+              </mat-card>
             </ng-container>
           </ng-container>
 
-          <!-- Fallback when no evaluations exist -->
-          <ng-template #noEvaluations>
+          <!-- Fallback when no questions exist -->
+          <ng-template #noQuestions>
             <div class="error-state">
               <p>No evaluations available for this session.</p>
               <a routerLink="/interview/setup" mat-raised-button color="primary" class="new-interview-btn">Start New Interview</a>
@@ -149,11 +138,22 @@ import { HighlightBlockComponent } from '../../shared/components/highlight-block
     .score-display.score-high { color: #2e7d32; }
     .score-display.score-mid  { color: #f57c00; }
     .score-display.score-low  { color: #c62828; animation: score-pulse 0.4s ease-in-out; }
+    .answered-line { color: #616161; font-size: 15px; margin-top: 8px; }
     .result-card { margin-bottom: 16px; }
+    .result-card.unanswered { border-left: 4px solid #f57c0b; }
     .failed-eval { border-left: 4px solid #f44336; margin-bottom: 16px; }
     pre code { display: block; background: #f5f5f5; padding: 12px; border-radius: 4px; overflow-x: auto; white-space: pre-wrap; }
     .error-state { text-align: center; min-height: 300px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 16px; }
     .new-interview-btn { margin-top: 24px; }
+
+    /* Question review */
+    .score-badge { color: #3949ab; font-weight: bold; }
+    .score-badge.ok { color: #2e7d32; }
+    .question-desc { white-space: pre-wrap; margin-top: 8px; }
+    .answer-text { display: block; white-space: pre-wrap; background: #fafafa; border-left: 3px solid #b0bec5; padding: 10px 12px; border-radius: 4px; overflow-x: auto; font-family: inherit; margin-top: 8px; }
+    .correct-answer { background: #e8f5e9; border-left-color: #66bb6a; }
+    .unanswered-note { color: #757575; font-style: italic; }
+    .failed-note { color: #c62828; font-weight: 500; }
 
     /* Topic chips */
     .topic-chips { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
@@ -176,8 +176,8 @@ export class ResultsPageComponent implements OnDestroy {
   private pollTimer: any = null;
   private pollCount = 0;
   private lastEvalCount = -1;
-  private readonly MAX_POLLS = 8;
-  private readonly POLL_INTERVAL_MS = 5000;
+  readonly MAX_POLLS = 8;
+  readonly POLL_INTERVAL_MS = 5000;
 
   constructor(
     private route: ActivatedRoute,
@@ -191,6 +191,11 @@ export class ResultsPageComponent implements OnDestroy {
       clearInterval(this.pollTimer);
       this.pollTimer = null;
     }
+  }
+
+  get answeredCount(): number {
+    const qs = this.results?.questions ?? [];
+    return qs.filter((q: any) => !!q.userAnswerText).length;
   }
 
   ngOnInit(): void {
@@ -251,8 +256,10 @@ export class ResultsPageComponent implements OnDestroy {
         next: (res: any) => {
           if (!res || !res.evaluations) return;
           const count = res.evaluations.length;
-          // Stable for one interval → evaluations are done.
-          if (count === this.lastEvalCount && this.lastEvalCount !== -1) {
+          // Stable for one interval → evaluations are done. Don't settle while empty so we don't
+          // stop polling before the background evaluation has produced its first result; the
+          // MAX_POLLS cap below still bounds total polling time in either case.
+          if (count > 0 && count === this.lastEvalCount && this.lastEvalCount !== -1) {
             this.stopPolling();
             return;
           }
@@ -291,14 +298,10 @@ export class ResultsPageComponent implements OnDestroy {
 
   retryEvaluation(answerId: number): void {
     this.interviewService.retryEvaluation(answerId).subscribe({
-      next: (evalResult: any) => {
-        if (this.results) {
-          const idx = this.results.evaluations.findIndex((e: any) => e.answerId === answerId);
-          if (idx !== -1) {
-            this.results.evaluations[idx] = evalResult;
-            this.cdr.markForCheck();
-          }
-        }
+      next: () => {
+        // The retried evaluation is now persisted; refetch the full results so the
+        // question card (with its reference answer) reflects the new evaluation.
+        this.reloadResults();
       },
       error: () => {
         this.snackBar.open('Retry failed', 'Close', { duration: 3000 });
@@ -306,7 +309,7 @@ export class ResultsPageComponent implements OnDestroy {
     });
   }
 
-  getEvalLanguage(e: any): string {
-    return e?.language || 'Java';
+  getReviewLanguage(q: any): string {
+    return q?.language || 'javascript';
   }
 }

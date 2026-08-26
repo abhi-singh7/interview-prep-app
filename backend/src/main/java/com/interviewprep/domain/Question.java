@@ -34,6 +34,9 @@ public class Question {
     @Column(name = "code_prompt", columnDefinition = "text")
     private String codePrompt;
 
+    @Column(name = "reference_answer", columnDefinition = "text")
+    private String referenceAnswer;
+
     // Vector embedding for semantic search capability (Hibernate 7 native VECTOR type)
     @JdbcTypeCode(SqlTypes.VECTOR)
     @Convert(converter = Question.VectorEmbeddingConverter.class)
@@ -58,6 +61,10 @@ public class Question {
     public void setDescription(String description) { this.description = description; }
     public String getCodePrompt() { return codePrompt; }
      public void setCodePrompt(String codePrompt) { this.codePrompt = codePrompt; }
+    // Never serialized on the Question entity itself (would leak answers mid-interview); results endpoints map it explicitly
+    @com.fasterxml.jackson.annotation.JsonIgnore
+    public String getReferenceAnswer() { return referenceAnswer; }
+    public void setReferenceAnswer(String referenceAnswer) { this.referenceAnswer = referenceAnswer; }
     // FIX-10: never serialize the 768-float embedding over HTTP (frontend never reads it)
     @com.fasterxml.jackson.annotation.JsonIgnore
     public double[] getVectorEmbedding() { return vectorEmbedding; }
