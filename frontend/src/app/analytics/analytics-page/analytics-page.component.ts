@@ -84,7 +84,7 @@ import { ThemeService } from '../../shared/theme/theme.service';
               <!-- Score Column -->
               <ng-container matColumnDef="score">
                 <th mat-header-cell *matHeaderCellDef>Score</th>
-                <td mat-cell *matCellDef="let session">{{ session.score }}/10</td>
+                <td mat-cell *matCellDef="let session">{{ (session.score || 0) }}/{{ ((session.questionCount || 0) * 10) }}</td>
               </ng-container>
 
               <tr mat-header-row *matHeaderRowDef="displayedColumns"></tr>

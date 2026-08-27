@@ -9,6 +9,9 @@ public class SessionSummary {
     private LocalDateTime endedAt;
     private String categoryId;
     private String difficulty;
-    // FIX-02: Double so scores keep 2-decimal precision (e.g. 7.45) instead of the old x100 bug
+    // Total points earned in this session (SUM of SUCCESS evaluation scores — same value as the
+    // My Sessions badge); frontend renders it as "earned / possible" using questionCount.
     private Double score;
+    // Total questions in the session → possible max = questionCount * 10
+    private Integer questionCount;
 }

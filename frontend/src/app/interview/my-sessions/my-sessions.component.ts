@@ -89,7 +89,7 @@ const SESSION_TIMEOUT_HOURS = 2;
                 <!-- Status badge + score -->
                 <div class="session-actions">
                   <span [class]="'status-badge ' + s.status.toLowerCase()">{{ s.status }}</span>
-                  <ng-container *ngIf="s.totalEarned != null && s.totalEarned > 0; else noScore">
+                  <ng-container *ngIf="s.totalEarned != null; else noScore">
                     <mat-card class="score-badge">Score: {{ (s.totalEarned || 0) }}/{{ (s.questionCount || 0) * 10 }}</mat-card>
                   </ng-container>
                   <ng-template #noScore></ng-template>

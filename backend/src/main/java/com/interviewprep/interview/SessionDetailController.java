@@ -136,6 +136,7 @@ public class SessionDetailController {
             sq.setQuestionText(q.getQuestionText());
             sq.setDescription(q.getDescription());
             sq.setCodePrompt(q.getCodePrompt());
+            sq.setReferenceAnswer(q.getReferenceAnswer());
             sq.setAnswerStatus("UNANSWERED");
             questionResponses.add(sq);
         }
@@ -152,6 +153,8 @@ public class SessionDetailController {
         sq.setQuestionText(q.getQuestionText());
         sq.setDescription(q.getDescription());
         sq.setCodePrompt(q.getCodePrompt());
+        // Reference answer shown for both answered and unanswered questions
+        sq.setReferenceAnswer(q.getReferenceAnswer());
 
         if (answer == null) {
             sq.setAnswerStatus("UNANSWERED");

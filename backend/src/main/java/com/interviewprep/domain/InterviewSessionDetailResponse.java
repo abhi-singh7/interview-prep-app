@@ -27,6 +27,8 @@ public class InterviewSessionDetailResponse {
         private String questionText;
         private String description;
         private String codePrompt;
+        // Reference/correct answer stored with the question at generation time (present for both answered and unanswered)
+        private String referenceAnswer;
         private String answerStatus;
         private SessionAnswerResponse answer;
     }

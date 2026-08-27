@@ -54,7 +54,7 @@ import { QuestionTypeBadgeComponent } from '../../shared/badges/question-type-ba
 
               <!-- Overall score + Retake button -->
               <div class="header-actions">
-                <mat-card class="score-badge" *ngIf="sessionDetail.totalEarned != null && sessionDetail.totalEarned > 0">
+                <mat-card class="score-badge" *ngIf="sessionDetail.totalEarned != null">
                   Score: {{ (sessionDetail.totalEarned || 0) }}/{{ ((sessionDetail.questions || []).length) * 10 }}
                 </mat-card>
                 <a [routerLink]="['/interview', 'setup']" [queryParams]="retakeQueryParams"
@@ -90,6 +90,13 @@ import { QuestionTypeBadgeComponent } from '../../shared/badges/question-type-ba
                 <div *ngIf="q.answer && q.type === 'CODE'">
                   <app-highlight-block [code]="q.answer.answerText"></app-highlight-block>
                 </div>
+
+                <!-- Correct (reference) answer — shown for both answered and unanswered questions -->
+                <ng-container *ngIf="q.referenceAnswer">
+                  <h4>Correct Answer:</h4>
+                  <p class="answer-text" *ngIf="q.type !== 'CODE'">{{ q.referenceAnswer }}</p>
+                  <app-highlight-block *ngIf="q.type === 'CODE'" [code]="q.referenceAnswer"></app-highlight-block>
+                </ng-container>
 
                 <!-- Evaluation details -->
                 <h4>Evaluation:</h4>
