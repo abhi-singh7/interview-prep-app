@@ -27,7 +27,10 @@ export class HighlightService {
     }
 
     try {
-      const result = hljs.highlight(plainText, { language: lang });
+      // FIX: pass RAW code to hljs — highlight.js escapes HTML entities in its output itself.
+      // Pre-encoding here made hljs escape a second time, so every <, >, & rendered as literal
+      // "&lt;"/"&amp;" in all code blocks (generics, comparisons, &&, etc).
+      const result = hljs.highlight(code, { language: lang });
       return { value: `<span class="hljs-comment">// ${lang}</span>\n${result.value}`, raw: code };
     } catch {
       return { value: plainText, raw: code };

@@ -141,6 +141,8 @@ public class SessionDetailController {
             questionResponses.add(sq);
         }
         response.setQuestions(questionResponses);
+        // FIX: questionCount was never set, so session-detail Retake links always fell back to count=5.
+        response.setQuestionCount(questionResponses.size());
 
         return ResponseEntity.ok(response);
     }

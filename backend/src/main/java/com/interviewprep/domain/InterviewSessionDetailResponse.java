@@ -15,6 +15,8 @@ public class InterviewSessionDetailResponse {
     private String difficulty;
     private LocalDateTime startedAt;
     private LocalDateTime endedAt;
+    // FIX: was missing from the DTO entirely, so session-detail Retake links always fell back to count=5.
+    private Integer questionCount;
     private Double overallScore;
     private Integer totalEarned;
     private List<SessionQuestionResponse> questions;

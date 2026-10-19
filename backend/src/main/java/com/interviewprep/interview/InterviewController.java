@@ -125,8 +125,11 @@ public class InterviewController {
         List<String> topicNames = resolveTopicNames(resolvedTopicIds);
 
         
-        String languageNameForPrompt = request.getLanguageId() != null && !request.getLanguageId().isBlank() 
-            ? resolveLanguageName(request.getLanguageId()) : (resolvedTopicIds.isEmpty() ? "" : resolvedTopicIds.getFirst());
+        // FIX: the old fallback injected a raw category *ID* (e.g. "42") as the prompt's
+        // "Programming Language". The language is only known when languageId is set; otherwise
+        // leave it blank — the generation prompt instructs the model to use Java then.
+        String languageNameForPrompt = request.getLanguageId() != null && !request.getLanguageId().isBlank()
+            ? resolveLanguageName(request.getLanguageId()) : "";
             
         // Only show "Category: X" when user explicitly selected topics; auto-select mode relies on language context alone
         String contextForDisplay = !topicNames.isEmpty() && request.getTopicIds() != null && !request.getTopicIds().isEmpty()
@@ -291,13 +294,16 @@ public class InterviewController {
             String category = session.getCategoryId();
 
             // FIX-04: count distinct questions answered (rows == distinct once dedup is enforced)
+            // FIX: include total question count so the resume card can render "x / total" instead of the old hardcoded /5
             long answeredCount = answerRepository.countDistinctQuestionsBySessionId(sessionId);
+            long totalQuestions = questionRepository.countBySessionId(sessionId);
 
             ObjectNode resumeInfo = JsonMapper.builder().build().createObjectNode();
             resumeInfo.put("sessionId", sessionId);
             resumeInfo.put("categoryId", category);
             resumeInfo.put("difficulty", session.getDifficulty());
             resumeInfo.put("answeredQuestions", answeredCount);
+            resumeInfo.put("totalQuestions", totalQuestions);
 
             return ResponseEntity.ok(resumeInfo);
         } else {
@@ -439,6 +445,17 @@ public class InterviewController {
             // Find all evaluations for this session's questions
             java.util.List<Evaluation> evaluationsList = evaluationRepository.findByAnswerSessionIdOrderByScoreDesc(session.getId());
 
+            // FIX: fetch answers + questions once and share them with buildQuestionReviews
+            // (the old code re-ran the same three queries inside it — results-page polls this endpoint up to 8 times).
+            java.util.List<Answer> sessionAnswers = answerRepository.findBySessionId(session.getId());
+            java.util.List<Question> sessionQuestions = questionRepository.findBySessionId(session.getId());
+            long totalQuestions = sessionQuestions.size();
+            long submittedAnswers = sessionAnswers.size();
+            if (status == SessionStatus.COMPLETED && submittedAnswers < totalQuestions) {
+                logger.warn("Session {} completed with only {}/{} answers submitted — unanswered questions get no evaluation",
+                        session.getId(), submittedAnswers, totalQuestions);
+            }
+
             double totalScore = 0;
             int evaluatedCount = 0;
             java.util.List<EvaluationDetail> evaluations = new java.util.ArrayList<>();
@@ -507,7 +524,7 @@ public class InterviewController {
             response.setStatus(status);
             response.setOverallScore(Math.round(overallScore * 100.0) / 100.0);
             response.setEvaluations(evaluations);
-            response.setQuestions(buildQuestionReviews(session));
+            response.setQuestions(buildQuestionReviews(session, sessionQuestions, sessionAnswers, evaluationsList));
 
             return ResponseEntity.ok(response);
 
@@ -534,26 +551,30 @@ public class InterviewController {
         }
     }
 
-    // Build the per-question review list: every session question with the user's submitted
-    // answer (or null when skipped) plus the stored reference (correct) answer, so unanswered
-    // and wrongly answered questions remain reviewable after finishing.
-    private List<QuestionReviewDetail> buildQuestionReviews(InterviewSession session) {
+    // Build the per-question review list from already-fetched entities (no re-queries):
+    // every session question with the user's submitted answer (or null when skipped) plus
+    // the stored reference (correct) answer, so unanswered/wrongly answered questions remain
+    // reviewable after finishing.
+    private List<QuestionReviewDetail> buildQuestionReviews(InterviewSession session,
+                                                             List<Question> sessionQuestions,
+                                                             List<Answer> sessionAnswers,
+                                                             List<Evaluation> sessionEvaluations) {
         Map<Long, Answer> answersByQuestion = new HashMap<>();
-        for (Answer a : answerRepository.findBySessionId(session.getId())) {
+        for (Answer a : sessionAnswers) {
             if (a != null && a.getQuestion() != null) {
                 answersByQuestion.put(a.getQuestion().getId(), a);
             }
         }
 
         Map<Long, Evaluation> evalsByAnswer = new HashMap<>();
-        for (Evaluation e : evaluationRepository.findByAnswerSessionIdOrderByScoreDesc(session.getId())) {
+        for (Evaluation e : sessionEvaluations) {
             if (e != null && e.getAnswer() != null) {
                 evalsByAnswer.put(e.getAnswer().getId(), e);
             }
         }
 
         List<QuestionReviewDetail> reviews = new ArrayList<>();
-        for (Question q : questionRepository.findBySessionId(session.getId())) {
+        for (Question q : sessionQuestions) {
             QuestionReviewDetail r = new QuestionReviewDetail();
             r.setQuestionId(q.getId());
             r.setQuestionType(q.getType());

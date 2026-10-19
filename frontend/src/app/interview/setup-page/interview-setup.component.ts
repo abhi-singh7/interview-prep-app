@@ -1,6 +1,6 @@
 import { Component, OnInit, OnDestroy, ChangeDetectionStrategy } from '@angular/core';
 import { CommonModule } from '@angular/common';
-import { Router, RouterModule } from '@angular/router';
+import { Router, RouterModule, ActivatedRoute } from '@angular/router';
 import { FormBuilder, FormGroup, FormsModule, ReactiveFormsModule, Validators } from '@angular/forms';
 import { MatButtonModule } from '@angular/material/button';
 import { MatCardModule } from '@angular/material/card';
@@ -142,24 +142,52 @@ export class InterviewSetupComponent implements OnInit, OnDestroy {
 
   loading = false;
 
+  // Topic names requested via ?topicNames= on a Retake link; preselected on first language load.
+  private retakeTopicNames: string[] = [];
+
   constructor(
     private fb: FormBuilder,
     private interviewService: InterviewSignalService,
     private dropdownDataService: DropdownDataService,
     private router: Router,
     private snackBar: MatSnackBar,
+    private route: ActivatedRoute,
   ) {}
 
   ngOnInit(): void {
+    // FIX: my-sessions and session-detail append ?languageId=&topicNames=&difficulty=&count=
+    // to /interview/setup for Retake, but the form used to ignore them, so a "retake" silently
+    // started a different interview. Consume them (validating each value) to prefill the form.
+    {
+      const q = this.route.snapshot.queryParams;
+      const difficulty = q['difficulty'];
+      const countStr = q['count'];
+      this.retakeTopicNames = (q['topicNames'] ?? '')
+        .split(',')
+        .map((s: string) => s.trim())
+        .filter(Boolean);
+      if (difficulty && ['easy', 'medium', 'hard'].includes(difficulty)) {
+        this.setupForm.patchValue({ difficulty });
+      }
+      if (countStr) {
+        const n = parseInt(countStr, 10);
+        if (Number.isInteger(n) && n >= 1 && n <= 20) {
+          this.setupForm.patchValue({ count: n });
+        }
+      }
+    }
+
     // Load languages from API on mount
     this.dropdownDataService.getLanguages().subscribe({
       next: (langs) => {
         this.languages = langs;
         if (this.setupForm.get('languageId')?.value === '') {
-          // Set default language to first available if none selected yet
-          if (langs.length > 0) {
-            this.setupForm.patchValue({ languageId: langs[0].id });
-            this.onLanguageChange(langs[0].id);
+          // Prefer the language requested by a retake link, else the first available.
+          const requestedId = this.route.snapshot.queryParams['languageId'] ?? '';
+          const initial = langs.find((l) => String(l.id) === requestedId) ?? (langs.length > 0 ? langs[0] : undefined);
+          if (initial) {
+            this.setupForm.patchValue({ languageId: initial.id });
+            this.onLanguageChange(initial.id);
           }
         }
       },
@@ -192,8 +220,15 @@ export class InterviewSetupComponent implements OnInit, OnDestroy {
       next: (topics) => {
         this.availableTopics = topics;
         this.filteredTopics = [...topics];
-        // Reset topic selection when language changes
-        this.selectedTopicOptions = [];
+        // Reset topic selection when language changes — except on a Retake link that
+        // requested specific topics: preselect those matched by display name.
+        if (this.retakeTopicNames.length) {
+          const wanted = new Set(this.retakeTopicNames.map((s: string) => s.toLowerCase()));
+          const matched = topics.filter((t) => wanted.has(t.name.toLowerCase()));
+          this.selectedTopicOptions = matched.length > 0 ? [...matched] : [];
+        } else {
+          this.selectedTopicOptions = [];
+        }
       },
       error: () => {
         this.snackBar.open('Failed to load topic options', 'Close', { duration: 5000 });

@@ -33,7 +33,7 @@ import { KeyboardShortcutsDirective } from '../../shared/directives/keyboard-sho
         <mat-card>
           <mat-card-header><mat-card-title>Ongoing Session</mat-card-title></mat-card-header>
           <mat-card-content>
-            <p>You have an ongoing interview: {{ resumeCategory }} ({{ answeredCount }}/5 questions done)</p>
+            <p>You have an ongoing interview: {{ resumeDifficulty }} — {{ answeredCount }}/{{ resumeTotalQuestions }} questions answered</p>
             <button mat-raised-button color="primary" (click)="resumeInterview()">Resume Interview</button>
           </mat-card-content>
         </mat-card>
@@ -160,8 +160,9 @@ import { KeyboardShortcutsDirective } from '../../shared/directives/keyboard-sho
 export class InterviewPageComponent implements OnInit {
   resumeOption = false;
   routeSessionId: number | null = null;
-  resumeCategory = '';
+  resumeDifficulty = '';
   answeredCount = 0;
+  resumeTotalQuestions = 0;
 
   questionsLoading = true;
   questionsLoadError = false;
@@ -189,6 +190,7 @@ export class InterviewPageComponent implements OnInit {
       if (sessionId) {
         this.resumeOption = true;
         this.routeSessionId = Number(sessionId);
+        this.loadResumeInfo(this.routeSessionId);
         this.loadCurrentQuestions(this.routeSessionId);
       } else {
         this.questionsLoading = false;
@@ -198,9 +200,25 @@ export class InterviewPageComponent implements OnInit {
     const localSessionId = this.interviewService.currentSessionId();
     if (localSessionId !== null && !this.resumeOption) {
       this.resumeOption = true;
+      // Show real progress on the resume card for the locally tracked session too.
+      this.loadResumeInfo(localSessionId);
     } else if (!localSessionId && !this.routeSessionId) {
       this.questionsLoading = false;
     }
+  }
+
+  /** FIX: populate the resume card from GET /resume — previously answeredCount was never set
+       *  and the total was hardcoded "/5", so resumed sessions always showed "0/5 done". */
+  private loadResumeInfo(sessionId: number): void {
+    this.interviewService.getResumeStatus().subscribe({
+      next: (info: any) => {
+        if (!info) return; // 204 — no active session server-side, keep defaults
+        this.answeredCount = Number(info.answeredQuestions ?? 0);
+        this.resumeTotalQuestions = Number(info.totalQuestions ?? 0);
+        this.resumeDifficulty = String(info.difficulty ?? '');
+      },
+      error: () => { /* keep defaults */ },
+    });
   }
 
   private loadCurrentQuestions(sessionId: number): void {
@@ -313,8 +331,10 @@ export class InterviewPageComponent implements OnInit {
       answerText = this.codingQuestionComponent?.codeAnswer || '';
     }
 
-    if (!answerText.trim() && this.currentQuestion.type === 'THEORY') {
-      return; // Don't allow submit for theory without an answer
+    // FIX: block blank submissions for BOTH question types — the backend rejects blank answerText
+    // with a 400, which only produced a confusing error snackbar for coding questions before.
+    if (!answerText.trim()) {
+      return;
     }
 
     if (this.currentQuestion.type === 'CODE') {

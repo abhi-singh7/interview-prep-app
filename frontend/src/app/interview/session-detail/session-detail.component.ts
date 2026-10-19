@@ -88,7 +88,7 @@ import { QuestionTypeBadgeComponent } from '../../shared/badges/question-type-ba
 
                 <!-- Code answer with syntax highlighting -->
                 <div *ngIf="q.answer && q.type === 'CODE'">
-                  <app-highlight-block [code]="q.answer.answerText"></app-highlight-block>
+                  <app-highlight-block [code]="q.answer.answerText" [lang]="q.answer.languageSubmitted"></app-highlight-block>
                 </div>
 
                 <!-- Correct (reference) answer — shown for both answered and unanswered questions -->
@@ -231,10 +231,14 @@ export class SessionDetailComponent {
 
         // Pre-populate retake query params from session data.
         if (this.sessionDetail.languageId && this.sessionDetail.topicNames?.length > 0) {
-          const topicStr = encodeURIComponent(this.sessionDetail.topicNames.join(','));
+          // FIX: the old manual encodeURIComponent double-encoded once the Angular router
+          // encoded these values itself, so setup received "Arrays%2CStrings" instead of
+          // "Arrays,Strings". Pass the raw value; the router handles encoding.
           this.retakeQueryParams = {
             languageId: this.sessionDetail.languageId,
-            topicNames: topicStr,
+            topicNames: this.sessionDetail.topicNames.join(','),
+            difficulty: this.sessionDetail.difficulty ?? '',
+            count: String(this.sessionDetail.questionCount ?? 5),
           };
         }
       },
