@@ -17,7 +17,9 @@ public class SessionTimeoutCleanupTask {
     }
 
     @Scheduled(fixedRate = 300000) // Run every 5 minutes
-    @Transactional(readOnly = true)
+    // FIX: was @Transactional(readOnly = true), which silently discarded the mutation below —
+    // expired sessions stayed ACTIVE forever (still resumable, still shown as "ongoing").
+    @Transactional
     public void cleanupExpiredSessions() {
         java.time.LocalDateTime cutoffTime = java.time.LocalDateTime.now().minusHours(2);
 
@@ -26,6 +28,7 @@ public class SessionTimeoutCleanupTask {
                     .forEach(session -> {
                         session.setStatus(SessionStatus.ABANDONED);
                         session.setEndedAt(java.time.LocalDateTime.now());
+                        sessionRepository.save(session);
                     });
         } catch (Exception e) {
             System.err.println("Failed to clean up expired sessions: " + e.getMessage());

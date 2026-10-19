@@ -201,7 +201,8 @@ export class MySessionsComponent implements OnInit {
   getRetakeQueryParams(s: SessionRow): Record<string, string> {
     return {
       languageId: s.languageId || '',
-      topicNames: encodeURIComponent((s.topicNames || []).join(',')),
+      // FIX: let the router encode — manual encodeURIComponent arrives double-encoded.
+      topicNames: (s.topicNames || []).join(','),
       difficulty: s.difficulty || '',
       count: String(s.questionCount || 5),
     };

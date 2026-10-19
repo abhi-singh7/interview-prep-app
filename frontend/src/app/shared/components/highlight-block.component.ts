@@ -115,16 +115,18 @@ export class HighlightBlockComponent implements OnInit {
   }
 
   async copyToClipboard(): Promise<void> {
+    // FIX: copy the raw `code` input. The old path decoded renderedCode(), which only undoes
+    // HTML entities — highlight.js <span class=...> markup stayed in the clipboard text.
+    const raw = this.code;
     try {
-      const raw = this.highlightService.getRawText(this.renderedCode());
       await navigator.clipboard.writeText(raw);
       this.copied.set(true);
       setTimeout(() => this.copied.set(false), 2000);
     } catch {
-      // Fallback: try selectAll + execCommand for insecure contexts
+      // Fallback: try select + execCommand for insecure contexts
       try {
         const textarea = document.createElement('textarea');
-        textarea.value = this.highlightService.getRawText(this.renderedCode());
+        textarea.value = raw;
         document.body.appendChild(textarea);
         textarea.select();
         document.execCommand('copy');

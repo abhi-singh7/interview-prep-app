@@ -59,6 +59,16 @@ public class AuthController {
      */
     @PostMapping("/register")
     public ResponseEntity<?> register(@RequestBody RegisterRequest request) {
+        // FIX: blank name/email/password used to be accepted — an empty password is a valid
+        // bcrypt hash that a later blank-password login would match. Reject blank fields and
+        // malformed emails up front (frontend form validators are trivially bypassable).
+        if (request.getName() == null || request.getName().isBlank()
+                || request.getEmail() == null || request.getEmail().isBlank()
+                || request.getPassword() == null || request.getPassword().isBlank()
+                || !EMAIL_SHAPE.matcher(request.getEmail()).matches()) {
+            return ResponseEntity.badRequest().body(Map.of("error", "Name, a valid email and a non-empty password are required"));
+        }
+
         if (userRepository.existsByEmail(request.getEmail())) {
             return ResponseEntity.badRequest().body(Map.of("error", "Email already in use"));
         }
@@ -98,6 +108,11 @@ public class AuthController {
      */
     @PostMapping("/login")
     public ResponseEntity<?> login(@RequestBody LoginRequest request) {
+        // FIX: a blank password must never be compared against a stored hash.
+        if (request.getEmail() == null || request.getEmail().isBlank()
+                || request.getPassword() == null || request.getPassword().isBlank()) {
+            return ResponseEntity.badRequest().body(Map.of("error", "Invalid credentials"));
+        }
         User user = userRepository.findByEmail(request.getEmail()).orElse(null);
         if (user == null || !passwordEncoder.matches(request.getPassword(), user.getPassword())) {
             return ResponseEntity.badRequest().body(Map.of("error", "Invalid credentials"));
@@ -150,6 +165,9 @@ public class AuthController {
      * @param request HTTP servlet request containing cookies
      * @return JWT token string if found, null otherwise
      */
+    private static final java.util.regex.Pattern EMAIL_SHAPE =
+            java.util.regex.Pattern.compile("^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$");
+
     private String extractJwtToken(HttpServletRequest request) {
         Cookie[] cookies = request.getCookies();
         if (cookies != null) {
